@@ -1,0 +1,290 @@
+﻿#!/usr/bin/env pwsh
+# ============================================================
+# SystemBase 一键部署到远程服务器（Windows PowerShell 版，Mac/Linux 请用 deploy.sh）
+# 方式：本机构建 → 打包上传 → 服务器安装依赖/迁移/切换版本/PM2 重启/健康检查（失败自动回滚）
+#
+# 用法（推荐使用统一入口 .\sb.ps1，本脚本等价于 .\sb.ps1 remote-*；首次可能需要
+#       Set-ExecutionPolicy -Scope CurrentUser RemoteSigned）:
+#   .\deploy.ps1 <环境> init              首次：初始化服务器（Node20/pnpm/PM2/Nginx/MySQL、建库、站点）并发布
+#   .\deploy.ps1 <环境>                   日常发布（一条命令）
+#   .\deploy.ps1 <环境> fresh             重置发布：清空远程数据库全部数据后重建（需输入库名确认）
+#   .\deploy.ps1 <环境> status            服务状态 / 当前版本 / 健康检查 / 今日错误数
+#   .\deploy.ps1 <环境> logs [级别|pm2|follow] [日期]
+#   .\deploy.ps1 <环境> releases          已发布版本列表
+#   .\deploy.ps1 <环境> rollback [版本号] 回滚到上一版本（或指定版本），数据库不回退
+#   .\deploy.ps1 <环境> restart|start|stop
+#   .\deploy.ps1 <环境> ssl 域名          部署 HTTPS（Let's Encrypt + 自动续期）
+#   .\deploy.ps1 <环境> db-remote-on [IP] / db-remote-off [IP]
+#   .\deploy.ps1 <环境> ssh               登录服务器
+# 环境: remote-pre（预发布）/ remote-release（正式），对应 deploy/envs/<环境>.env
+# 前置:
+#   1. 复制 deploy/envs/remote-pre.env.example 为 deploy/envs/remote-pre.env 并填写 SSH_HOST 与应用配置
+#   2. 已配置 SSH 免密登录（见 docs/deploy.md；Windows 不支持 SSH_PASSWORD）
+# 可选: -SkipTests 跳过发布前单测；$env:DB_ROOT_PASS='xxx' init 时提供 MySQL root 密码
+# ============================================================
+param(
+  [Parameter(Position = 0)][string]$Environment = "",
+  [Parameter(Position = 1)][string]$Command = "deploy",
+  [Parameter(Position = 2)][string]$Arg1 = "",
+  [Parameter(Position = 3)][string]$Arg2 = "",
+  [switch]$SkipTests
+)
+$ErrorActionPreference = "Stop"
+$root = $PSScriptRoot
+Set-Location $root
+$envTool = Join-Path $root "deploy\server\env-tool.cjs"
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+
+function Write-Step([string]$msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
+function Fail([string]$msg) { Write-Host "✗ $msg" -ForegroundColor Red; exit 1 }
+
+function Show-Usage {
+  Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 6 -First 18 | ForEach-Object { $_ -replace '^# ?', '' }
+  exit 1
+}
+
+# ---------- 读取环境配置（deploy/envs/<环境>.env） ----------
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail "需要 Node.js ≥ 20" }
+if (-not $Environment -or $Environment -in @("-h", "--help", "help")) { Show-Usage }
+$envsFile = Join-Path $root "deploy\envs\$Environment.env"
+if (-not (Test-Path $envsFile)) { Fail "缺少 $envsFile（复制 .env.example 后填写）" }
+function Get-EnvValue([string]$key, [string]$default = "") {
+  return [string](& node $envTool get $envsFile $key $default | Select-Object -First 1)
+}
+$sshHost = Get-EnvValue "SSH_HOST"
+if (-not $sshHost -or $sshHost -match "YOUR_") { Fail "请先在 $envsFile 中填写 SSH_HOST" }
+$sshPort = Get-EnvValue "SSH_PORT" "22"; if (-not $sshPort) { $sshPort = "22" }
+$sshUser = Get-EnvValue "SSH_USER" "root"; if (-not $sshUser) { $sshUser = "root" }
+if (Get-EnvValue "SSH_PASSWORD") { Fail "Windows 下不支持 SSH_PASSWORD，请配置 SSH 免密登录（见 docs/deploy.md）" }
+$appDir = Get-EnvValue "DEPLOY_DIR" "/opt/systembase"; if (-not $appDir) { $appDir = "/opt/systembase" }
+$appName = Get-EnvValue "APP_NAME" "systembase"; if (-not $appName) { $appName = "systembase" }
+$keep = Get-EnvValue "KEEP_RELEASES" "5"; if (-not $keep) { $keep = "5" }
+$registry = Get-EnvValue "NPM_REGISTRY" "https://registry.npmmirror.com"
+if ($appDir -notmatch '^/[\w./-]+$' -or $appDir -eq "/") { Fail "DEPLOY_DIR 必须是绝对路径，如 /opt/systembase" }
+if ($appName -notmatch '^[a-z][a-z0-9-]*$') { Fail "APP_NAME 只能包含小写字母、数字、连字符" }
+
+# 应用配置 = 环境文件剔除部署专用键（每次发布前重新生成到 .run，打包与 init 上传用；产物，gitignore）
+$runDir = Join-Path $root ".run"
+if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Force -Path $runDir | Out-Null }
+$envProd = Join-Path $runDir "env.production"
+$deployKeys = '^\s*(SSH_HOST|SSH_PORT|SSH_USER|SSH_PASSWORD|DEPLOY_DIR|APP_NAME|KEEP_RELEASES|NPM_REGISTRY)='
+$lines = @(Get-Content $envsFile -Encoding UTF8 | Where-Object { $_ -notmatch $deployKeys })
+[IO.File]::WriteAllText($envProd, (($lines -join "`n") + "`n"), $utf8NoBom)
+
+$target = "$sshUser@$($sshHost)"
+$sshOpts = @("-p", $sshPort, "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30")
+$ops = "bash $appDir/current/deploy/server/ops.sh $appDir $appName"
+$script:RemoteCode = 0
+
+# 远程执行：输出直接显示；退出码记入 $script:RemoteCode（-NoThrow 时由调用方判断）
+function Invoke-Remote([string]$cmd, [switch]$Tty, [switch]$NoThrow) {
+  $a = @() + $sshOpts
+  if ($Tty) { $a += "-t" } else { $a += @("-o", "BatchMode=yes") }
+  $a += @($target, $cmd)
+  & ssh @a
+  $script:RemoteCode = $LASTEXITCODE
+  if ($script:RemoteCode -ne 0 -and -not $NoThrow) { Fail "远程命令执行失败（退出码 $($script:RemoteCode)）" }
+}
+
+function Send-Files([string[]]$files, [string]$dest) {
+  $a = @("-P", $sshPort, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-q") + $files + @("${target}:$dest")
+  & scp @a
+  if ($LASTEXITCODE -ne 0) { Fail "上传失败: $($files -join ', ')" }
+}
+
+function Test-Ssh {
+  Write-Host "检查 SSH 免密登录 $target ..."
+  Invoke-Remote "true" -NoThrow
+  if ($script:RemoteCode -ne 0) { Fail "无法免密登录 ${target}:$sshPort，请先配置 SSH 密钥（见 docs/deploy.md）" }
+}
+
+function Test-EnvProd {
+  $null = & node $envTool check $envProd
+  if ($LASTEXITCODE -ne 0) { exit 1 }
+}
+
+function Get-SiteUrl {
+  return ((Get-EnvValue "CORS_ORIGINS" "http://$sshHost") -split ",")[0]
+}
+
+# 转 LF 并以 UTF-8（无 BOM）写回：服务器上 bash 不认 CRLF
+function Convert-ToLF([string]$path) {
+  $c = [IO.File]::ReadAllText($path) -replace "`r`n", "`n"
+  [IO.File]::WriteAllText($path, $c, $utf8NoBom)
+}
+
+# ---------- 构建 ----------
+function Invoke-Build {
+  if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { Fail "未找到 pnpm，请执行 corepack enable（或 npm i -g pnpm@9）" }
+  $pv = [string](& pnpm -v | Select-Object -First 1)
+  if ($pv -notmatch '^9\.') { Fail "需要 pnpm 9.x（当前: $pv）。执行 corepack enable，或 npm i -g pnpm@9" }
+  if (-not (Test-Path (Join-Path $root "node_modules"))) {
+    Write-Step "安装依赖"
+    Invoke-Checked "依赖安装失败" { pnpm install --frozen-lockfile }
+  }
+  Write-Step "构建共享包 + 生成 Prisma Client"
+  Invoke-Checked "共享包构建失败" { pnpm --filter "@sb/shared" build }
+  Invoke-Checked "Prisma Client 生成失败" { pnpm --filter "@sb/server" prisma:generate }
+  if (-not $SkipTests) {
+    Write-Step "后端单元测试（-SkipTests 可跳过）"
+    Invoke-Checked "单元测试未通过，已停止发布" { pnpm --filter "@sb/server" test --silent }
+  }
+  Write-Step "构建后端（nest build）"
+  Invoke-Checked "后端构建失败" { pnpm --filter "@sb/server" build }
+  Write-Step "构建前端（vue-tsc + vite build）"
+  Invoke-Checked "前端构建失败" { pnpm --filter "@sb/web" build }
+}
+
+# ---------- 打包：只含运行所需文件，node_modules 在服务器按 lockfile 安装 ----------
+function New-ReleaseTar([string]$stamp) {
+  $stage = Join-Path $env:TEMP "$appName-stage-$stamp"
+  if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+  foreach ($d in @("packages\shared", "apps\server", "apps\web", "deploy")) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $stage $d) | Out-Null
+  }
+  Copy-Item "$root\package.json", "$root\pnpm-workspace.yaml", "$root\pnpm-lock.yaml" $stage
+  Copy-Item "$root\packages\shared\package.json" "$stage\packages\shared\"
+  Copy-Item "$root\packages\shared\dist" "$stage\packages\shared\dist" -Recurse
+  Copy-Item "$root\apps\server\package.json" "$stage\apps\server\"
+  foreach ($d in @("dist", "prisma")) { Copy-Item "$root\apps\server\$d" "$stage\apps\server\$d" -Recurse }
+  Copy-Item "$root\apps\web\package.json" "$stage\apps\web\"
+  Copy-Item "$root\apps\web\dist" "$stage\apps\web\dist" -Recurse
+  Copy-Item "$root\deploy\server" "$stage\deploy\server" -Recurse
+  Get-ChildItem "$stage\deploy\server" -File | ForEach-Object { Convert-ToLF $_.FullName }
+  Copy-Item $envProd "$stage\.env.production"
+  Convert-ToLF "$stage\.env.production"
+
+  $commit = "none"
+  if (Test-Path (Join-Path $root ".git")) { $commit = [string](& git rev-parse --short HEAD | Select-Object -First 1) }
+  $version = [string](& node -p "require('./package.json').version")
+  $meta = "release=$stamp`nenv=$Environment`nbuiltAt=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`nbuiltBy=$env:USERNAME@$env:COMPUTERNAME`ncommit=$commit`nversion=$version`n"
+  [IO.File]::WriteAllText((Join-Path $stage "RELEASE"), $meta, $utf8NoBom)
+
+  $tarPath = Join-Path $root "$appName-$stamp.tar.gz"
+  & tar -czf $tarPath -C $stage . | Out-Null   # 函数返回值只能是路径，屏蔽其他输出
+  $code = $LASTEXITCODE
+  Remove-Item $stage -Recurse -Force
+  if ($code -ne 0) { Fail "打包失败（需要 Windows 10 1803+ 自带的 tar）" }
+  return $tarPath
+}
+
+# ---------- 发布（mode: deploy | fresh） ----------
+function Invoke-Deploy([string]$mode = "deploy") {
+  Test-EnvProd
+  Test-Ssh
+  Invoke-Build
+  $stamp = Get-Date -Format "yyyyMMddHHmmss"
+  Write-Step "打包发布文件"
+  $tarPath = New-ReleaseTar $stamp
+  $tarName = Split-Path $tarPath -Leaf
+  Write-Host ("    {0}（{1} MB）" -f $tarName, [math]::Round((Get-Item $tarPath).Length / 1MB, 1))
+  try {
+    Write-Step "上传到 $target"
+    $rscript = "/tmp/$appName-deploy-$stamp.sh"
+    $localScript = Join-Path $env:TEMP "$appName-remote-deploy-$stamp.sh"
+    Copy-Item "$root\deploy\server\remote-deploy.sh" $localScript
+    Convert-ToLF $localScript
+    Send-Files @($tarPath) "/tmp/$tarName"
+    Send-Files @($localScript) $rscript
+    Remove-Item $localScript -Force
+
+    if ($mode -eq "fresh") { Write-Step "服务器执行重置发布" } else { Write-Step "服务器执行发布（依赖/迁移/切换/重启/健康检查）" }
+    $cmd = "tr -d '\r' < $rscript > $rscript.lf; NPM_REGISTRY='$registry' bash $rscript.lf '$appDir' '/tmp/$tarName' '$mode' '$appName' '$keep'; rc=`$?; rm -f $rscript $rscript.lf '/tmp/$tarName'; exit `$rc"
+    Invoke-Remote $cmd -NoThrow
+    if ($script:RemoteCode -ne 0) { Fail "发布失败（线上仍为原版本或已自动回滚）。排查: .\sb.ps1 $Environment logs pm2" }
+  } finally {
+    Remove-Item $tarPath -Force -ErrorAction SilentlyContinue
+  }
+
+  $url = Get-SiteUrl
+  Write-Host "`n===========================================" -ForegroundColor Green
+  Write-Host " 发布完成: $stamp（环境: $Environment → $target）" -ForegroundColor Green
+  Write-Host " 访问地址: $url/" -ForegroundColor Green
+  if ($mode -eq "fresh") { Write-Host " 数据已重置，默认账号 admin / admin123，请立即登录修改密码！" -ForegroundColor Red }
+  Write-Host " 查看状态: .\sb.ps1 $Environment status    回滚: .\sb.ps1 $Environment rollback" -ForegroundColor Green
+  Write-Host "===========================================" -ForegroundColor Green
+}
+
+function Assert-Released {
+  Invoke-Remote "test -L $appDir/current" -NoThrow
+  if ($script:RemoteCode -ne 0) { Fail "服务器尚未发布过，请先执行 .\deploy.ps1 init" }
+}
+
+# ---------- 命令分发 ----------
+$cmdName = $Command.ToLower()
+switch ($cmdName) {
+  "deploy" { Invoke-Deploy }
+
+  "init" {
+    Test-EnvProd
+    Test-Ssh
+    Write-Step "1/3 上传生产配置与初始化脚本"
+    $setupDir = "/tmp/$appName-setup"
+    Invoke-Remote "mkdir -p '$appDir/shared' $setupDir"
+    $tmp = Join-Path $env:TEMP "$appName-setup"
+    if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    foreach ($f in @("setup-server.sh", "env-tool.cjs", "nginx-site.conf")) {
+      Copy-Item "$root\deploy\server\$f" $tmp
+      Convert-ToLF (Join-Path $tmp $f)
+    }
+    Copy-Item $envProd (Join-Path $tmp "env.production")
+    Convert-ToLF (Join-Path $tmp "env.production")
+    Send-Files @((Join-Path $tmp "env.production")) "$appDir/shared/.env"
+    Send-Files @((Join-Path $tmp "setup-server.sh"), (Join-Path $tmp "env-tool.cjs"), (Join-Path $tmp "nginx-site.conf")) "$setupDir/"
+    Remove-Item $tmp -Recurse -Force
+
+    Write-Step "2/3 初始化服务器（Node20 / pnpm / PM2 / Nginx / MySQL / 建库 / 站点）"
+    $rootPass = if ($env:DB_ROOT_PASS) { $env:DB_ROOT_PASS } else { "" }
+    Invoke-Remote "cd $setupDir && DB_ROOT_PASS='$rootPass' NPM_REGISTRY='$registry' bash setup-server.sh '$appDir' '$appName'; rc=`$?; rm -rf $setupDir; exit `$rc" -Tty
+
+    Write-Step "3/3 首次发布"
+    Invoke-Deploy
+    Write-Host "首次部署完成：默认账号 admin / admin123，请立即登录修改密码；确认安全组已放行 80/443。" -ForegroundColor Yellow
+  }
+
+  "fresh" {
+    Test-EnvProd
+    $dbName = [string](& node $envTool db $envProd | Select-Object -Index 4)
+    Write-Host ""
+    Write-Host "====================================================" -ForegroundColor Red
+    Write-Host "  危险操作：远程数据库将被完全重置" -ForegroundColor Red
+    Write-Host "  服务器: $target    数据库: $dbName" -ForegroundColor Red
+    Write-Host "  全部业务数据将被删除且不可恢复，账号恢复为默认密码" -ForegroundColor Red
+    Write-Host "  （日志文件不受影响）" -ForegroundColor Red
+    Write-Host "====================================================" -ForegroundColor Red
+    $confirm = Read-Host "请输入数据库名 $dbName 确认"
+    if ($confirm -ne $dbName) { Write-Host "已取消，未做任何改动"; return }
+    Invoke-Deploy "fresh"
+  }
+
+  { $_ -in @("status", "releases", "restart", "start", "stop") } {
+    Assert-Released; Invoke-Remote "$ops $cmdName"
+  }
+  "logs" {
+    Assert-Released
+    if ($Arg1 -in @("follow", "-f")) { Invoke-Remote "$ops logs follow" -Tty -NoThrow }
+    else { Invoke-Remote "$ops logs '$Arg1' '$Arg2'" -NoThrow }
+  }
+  "rollback" { Assert-Released; Invoke-Remote "$ops rollback '$Arg1'" }
+  "ssl" {
+    if (-not $Arg1) { Fail "用法: .\deploy.ps1 ssl 你的域名" }
+    Assert-Released
+    Invoke-Remote "bash $appDir/current/deploy/server/setup-ssl.sh '$Arg1' '$appName' '$appDir'"
+  }
+  "db-remote-on" {
+    Assert-Released
+    $ip = if ($Arg1) { $Arg1 } else { "%" }
+    Invoke-Remote "bash $appDir/current/deploy/server/db-remote.sh '$appDir' on '$ip'" -Tty
+  }
+  "db-remote-off" {
+    Assert-Released
+    Invoke-Remote "bash $appDir/current/deploy/server/db-remote.sh '$appDir' off '$Arg1'" -Tty
+  }
+  "ssh" { & ssh @sshOpts $target }
+  { $_ -in @("help", "-h", "--help") } { Show-Usage }
+  default {
+    Write-Host "未知命令: $Command（环境 $Environment。.\deploy.ps1 help 查看用法）"
+    exit 1
+  }
+}

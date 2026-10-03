@@ -1,0 +1,22 @@
+{
+  "name": "systembase",
+  "version": "0.2.0",
+  "private": true,
+  "description": "SystemBase - 前后端分离基础框架 (NestJS + Prisma + Vue3 + TS, pnpm monorepo)",
+  "scripts": {
+    "dev": "concurrently -n shared,server,web -c yellow,blue,green \"pnpm --filter @sb/shared dev\" \"pnpm --filter @sb/server dev\" \"pnpm --filter @sb/web dev\"",
+    "dev:server": "pnpm --filter @sb/server dev",
+    "dev:web": "pnpm --filter @sb/web dev",
+    "build": "pnpm --filter @sb/shared build && pnpm --filter @sb/server build && pnpm --filter @sb/web build",
+    "test": "pnpm --filter @sb/server test",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=20.10",
+    "pnpm": ">=9 <10"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

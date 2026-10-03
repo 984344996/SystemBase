@@ -1,0 +1,83 @@
+# SystemBase 一键部署：mysql + redis(可选) + server + web
+# 用法：cd deploy && docker compose up -d --build
+# server 启动时自动执行 prisma migrate deploy（只跑未应用的迁移）
+# 首次部署后初始化种子数据（幂等，可重复执行）：
+#   docker compose exec server node dist/database/seed.js
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: sb-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123456}
+      MYSQL_DATABASE: system_base
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - sb-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD:-root123456}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # 可选：LOCK_DRIVER=redis 时以 --profile redis 启用（make up-redis）；
+  # 默认不启动，后端自动使用数据库锁，零外部依赖
+  redis:
+    profiles: ["redis"]
+    image: redis:7-alpine
+    container_name: sb-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.server
+    container_name: sb-server
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: mysql://root:${MYSQL_ROOT_PASSWORD:-root123456}@mysql:3306/system_base
+      # 生产必填：至少 16 位随机串，缺失会启动失败
+      JWT_SECRET: ${JWT_SECRET:?请在 .env 中设置 JWT_SECRET}
+      JWT_EXPIRES_IN: 2h
+      JWT_REFRESH_EXPIRES_IN: 7d
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      LOCK_DRIVER: ${LOCK_DRIVER:-db}
+      REDIS_URL: redis://redis:6379
+      LOG_DIR: /app/logs
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_KEEP_DAYS: ${LOG_KEEP_DAYS:-30}
+      TZ: Asia/Shanghai
+    volumes:
+      - sb-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.web
+    container_name: sb-web
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  sb-mysql-data:
+  sb-logs:

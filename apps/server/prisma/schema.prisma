@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============ 用户与权限 ============
+
+model User {
+  id        Int       @id @default(autoincrement())
+  username  String    @unique @db.VarChar(50)
+  password  String    @db.VarChar(100)
+  name      String    @db.VarChar(50)
+  phone     String?   @db.VarChar(20)
+  email     String?   @db.VarChar(100)
+  status    String    @default("ENABLED") @db.VarChar(20) // ENABLED / DISABLED
+  remark    String?   @db.VarChar(255)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // 软删除
+
+  roles         UserRole[]
+  refreshTokens RefreshToken[]
+}
+
+model Role {
+  id        Int       @id @default(autoincrement())
+  code      String    @unique @db.VarChar(50) // 如 SUPER_ADMIN
+  name      String    @db.VarChar(50)
+  status    String    @default("ENABLED") @db.VarChar(20)
+  remark    String?   @db.VarChar(255)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  users UserRole[]
+  menus RoleMenu[]
+}
+
+model UserRole {
+  userId Int
+  roleId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+// 菜单/权限点：type = DIRECTORY(目录) | MENU(页面) | BUTTON(按钮)
+model Menu {
+  id         Int       @id @default(autoincrement())
+  parentId   Int?      @default(0)
+  name       String    @db.VarChar(50)
+  type       String    @db.VarChar(20)
+  path       String?   @db.VarChar(200)   // 路由路径(DIRECTORY/MENU)
+  component  String?   @db.VarChar(200)   // 前端组件路径(MENU)
+  permission String?   @db.VarChar(100)   // 权限码(BUTTON 或页面级)
+  icon       String?   @db.VarChar(100)
+  sort       Int       @default(0)
+  visible    Boolean   @default(true)
+  status     String    @default("ENABLED") @db.VarChar(20)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  roles RoleMenu[]
+
+  @@index([parentId])
+}
+
+model RoleMenu {
+  roleId Int
+  menuId Int
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  menu   Menu @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, menuId])
+}
+
+// ============ 认证 ============
+// 说明：登录日志 / 操作日志 / 任务执行记录均只写日志文件(LOG_DIR/app.YYYY-MM-DD.log)，不落库
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  tokenHash String    @unique @db.VarChar(128)
+  expiresAt DateTime
+  revokedAt DateTime?
+  ip        String?   @db.VarChar(50)
+  ua        String?   @db.VarChar(255)
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ============ 动态定时任务 ============
+
+model Job {
+  id            Int       @id @default(autoincrement())
+  name          String    @unique @db.VarChar(100)
+  handlerKey    String    @db.VarChar(100) // 对应 @JobHandler('key')
+  cronExpr      String    @db.VarChar(50)  // 5 段 cron: 分 时 日 月 周
+  params        Json?
+  status        String    @default("ENABLED") @db.VarChar(20) // ENABLED / PAUSED
+  misfirePolicy String    @default("SKIP") @db.VarChar(20)    // SKIP / RUN_ONCE
+  timeoutSec    Int       @default(300)
+  remark        String?   @db.VarChar(255)
+  prevRunAt     DateTime?
+  nextRunAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([handlerKey])
+}
+
+// ============ 分布式锁(LOCK_DRIVER=db 时使用) ============
+
+model SysLock {
+  id        Int      @id @default(autoincrement())
+  key       String   @unique @db.VarChar(191)
+  owner     String   @db.VarChar(64)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+coverage/
+logs/
+*.log
+.DS_Store
+apps/server/prisma/*.db
+
+# ===== 环境变量（含数据库密码 / JWT 密钥，勿提交）=====
+# 唯一配置源在 deploy/envs/（见下方部署段）；apps/server/.env 为指向 local.env 的软链接
+.env
+.env.*
+
+# ===== 部署 =====
+# 环境配置（含 SSH 密码 / 数据库密码 / JWT 密钥；模板为 deploy/envs/*.env.example）
+deploy/envs/*.env
+!deploy/envs/*.env.example
+# 发布包（deploy.sh 打包后自动删除，异常中断时可能残留）
+systembase-*.tar.gz
+*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].tar.gz
+# 本地启动脚本的进程输出与 PID
+.run/
