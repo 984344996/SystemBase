@@ -9,6 +9,9 @@
 #   ./start-local.sh stop      停止前后端
 #   ./start-local.sh status    查看运行状态
 #   ./start-local.sh logs      跟踪前后端开发进程输出
+#   ./start-local.sh db-backup [备注]   备份本地数据库到 backup/local/（需本机有 mysqldump）
+#   ./start-local.sh db-restore <文件>  用 backup/local/xxx.sql.gz 恢复本地库（需输入库名确认）
+#   ./start-local.sh db-list            列出本地备份
 #
 # 说明:
 #   - 配置源是 deploy/envs/local.env（端口/数据库等，含 WEB_PORT 前端端口）；每次启动自动同步为
@@ -31,7 +34,7 @@ G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; N='\033[0m'
 info() { echo -e "${G}==> $*${N}"; }
 warn() { echo -e "${Y}!! $*${N}"; }
 die()  { echo -e "${R}✗ $*${N}" >&2; exit 1; }
-usage() { sed -n '5,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+usage() { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 command -v node >/dev/null 2>&1 || die "需要 Node.js ≥ 20"
 mkdir -p deploy/envs
@@ -56,6 +59,8 @@ fi
 
 DB_INFO="$(node "$ENV_TOOL" db "$ENV_FILE")" || exit 1
 DB_HOST="$(sed -n 1p <<< "$DB_INFO")"; DB_PORT="$(sed -n 2p <<< "$DB_INFO")"; DB_NAME="$(sed -n 5p <<< "$DB_INFO")"
+DB_USER="$(sed -n 3p <<< "$DB_INFO")"; DB_PASS="$(sed -n 4p <<< "$DB_INFO")"
+BACKUP_DIR="$ROOT/backup/local"
 case "$DB_HOST" in localhost|127.0.0.1) ;; *) die "DATABASE_URL 指向 ${DB_HOST}，本地脚本只操作本机数据库" ;; esac
 SERVER_PORT="$(node "$ENV_TOOL" get "$ENV_FILE" PORT 3000)"
 WEB_PORT="${SB_WEB_PORT:-$(node "$ENV_TOOL" get "$ENV_FILE" WEB_PORT 5173)}"
@@ -219,7 +224,69 @@ start_all() {
   print_summary
 }
 
+# ---------- 数据库备份 / 恢复 ----------
+mysql_args() { echo "-h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} --default-character-set=utf8mb4"; }
+
+# ★ MySQL 8 默认开启 GTID：默认导出的 dump 含 SET @@GLOBAL.GTID_PURGED，恢复时会报
+#   ERROR 3546（gtid set 与 GTID_EXECUTED 重叠）。开启 GTID 时必须 --set-gtid-purged=OFF
+gtid_dump_opt() {
+  MYSQL_PWD="$DB_PASS" mysql $(mysql_args) -N -e "SELECT @@gtid_mode" 2>/dev/null \
+    | grep -qiE '^(ON|ON_PERMISSIVE)$' && echo "--set-gtid-purged=OFF" || true
+}
+
+# 兼容历史备份：旧 dump 里的 GTID 语句在恢复时会失败，导入前剔除（不影响数据）
+strip_gtid() { sed -E '/^SET @@(GLOBAL\.GTID_PURGED|SESSION\.SQL_LOG_BIN|SESSION\.GTID_NEXT)/d'; }
+
+db_backup() {
+  command -v mysqldump >/dev/null 2>&1 || die "本机未安装 mysqldump（brew install mysql-client 或安装 MySQL 后重试）"
+  mkdir -p "$BACKUP_DIR"
+  local name="${DB_NAME}_$(date +%Y%m%d%H%M%S)"
+  # 备注清洗：保留字母数字、_-、中文（tr 会把中文逐字节替换成下划线，故用 node）
+  [ -n "${1:-}" ] && name="${name}_$(node -e 'process.stdout.write(String(process.argv[1]).replace(/[^A-Za-z0-9_一-龥-]+/g,"_"))' "$1")"
+  # --no-tablespaces：MySQL 8 的 mysqldump 默认读 tablespace 信息（需要 PROCESS 权限），
+  #   非 root 账号会失败；本备份不需要表空间信息
+  if MYSQL_PWD="$DB_PASS" mysqldump $(mysql_args) $(gtid_dump_opt) --no-tablespaces --single-transaction --quick --routines --triggers "$DB_NAME" \
+    | gzip > "$BACKUP_DIR/$name.sql.gz"; then
+    info "备份完成: backup/local/$name.sql.gz（$(du -h "$BACKUP_DIR/$name.sql.gz" | cut -f1)）"
+  else
+    rm -f "$BACKUP_DIR/$name.sql.gz"
+    die "备份失败：请确认 MySQL 已启动且账号有 SELECT 权限"
+  fi
+  find "$BACKUP_DIR" -name "*.sql.gz" -type f -mtime +"${KEEP_BACKUP_DAYS:-7}" -delete 2>/dev/null || true
+}
+
+db_restore() {
+  command -v mysql >/dev/null 2>&1 || die "本机未安装 mysql 客户端（无法恢复）"
+  local src="${1:?用法: ./sb.sh local db-restore backup/local/xxx.sql.gz}"
+  [ -f "$src" ] || { [ -f "$BACKUP_DIR/$src" ] && src="$BACKUP_DIR/$src" || die "备份文件不存在: $src（./sb.sh local db-list 查看）"; }
+  case "$src" in *.sql.gz|*.sql) ;; *) die "备份文件需为 .sql 或 .sql.gz" ;; esac
+  echo -e "${R}将用 $src 覆盖本地数据库 ${DB_NAME} 的全部数据${N}"
+  read -r -p "请输入数据库名 ${DB_NAME} 确认: " CONFIRM
+  [ "$CONFIRM" = "$DB_NAME" ] || { echo "已取消"; exit 0; }
+  command -v mysqldump >/dev/null 2>&1 && { info "恢复前先备份当前库..."; db_backup "auto-before-restore"; }
+  if [ "${src%.gz}" != "$src" ]; then
+    gunzip < "$src" | strip_gtid | MYSQL_PWD="$DB_PASS" mysql $(mysql_args) "$DB_NAME" || die "恢复失败"
+  else
+    strip_gtid < "$src" | MYSQL_PWD="$DB_PASS" mysql $(mysql_args) "$DB_NAME" || die "恢复失败"
+  fi
+  info "恢复完成"
+}
+
+db_list() {
+  [ -d "$BACKUP_DIR" ] || { echo "还没有备份"; return 0; }
+  echo "本地备份（$BACKUP_DIR）："
+  ls -lhtr "$BACKUP_DIR"/*.sql.gz 2>/dev/null | awk '{print "  "$5"\t"$9}' | sed "s|${BACKUP_DIR}/||" || echo "  （空）"
+}
+
 # ---------- 命令分发 ----------
+# 每个命令实际会做什么：
+#   start / restart(默认)  装依赖 → 停旧进程 → 检查端口 → prisma migrate deploy(库不存在自动建)
+#                          → seed 幂等补齐数据 → 后台启动后端+前端 → 等待健康检查
+#   fresh                  ⚠ prisma migrate reset 清空本地库 → 再走一遍 start（需输入 yes）
+#   stop                   结束后端与前端（只杀本项目目录内的进程）
+#   status                 显示 后端/前端/MySQL 运行状态 + 健康检查（端口被谁占用也会提示）
+#   logs                   跟踪 .run/server.log（后端 watch 输出）
+#   db-backup / db-restore / db-list   本地库备份/恢复/列表
 case "${1:-restart}" in
   restart|start) start_all restart ;;
   fresh)
@@ -231,6 +298,9 @@ case "${1:-restart}" in
   stop)   stop_services ;;
   status) show_status ;;
   logs)   tail -n 30 -F "$RUN_DIR/server.log" "$RUN_DIR/web.log" ;;
+  db-backup)  db_backup "${2:-}" ;;
+  db-restore) db_restore "${2:-}" ;;
+  db-list)    db_list ;;
   -h|--help|help) usage ;;
   *) echo "未知命令: $1"; usage ;;
 esac

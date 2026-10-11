@@ -22,6 +22,12 @@ model User {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime? // 软删除
 
+  // ---- 安全策略 ----
+  // 管理员重置密码后由系统置 true，登录后必须先改密（PASSWORD_* / 强制改密策略）
+  mustChangePassword Boolean   @default(false)
+  // 密码最后一次修改时间，用于 PASSWORD_EXPIRE_DAYS 过期判定（为空视为从未改过）
+  pwdUpdatedAt       DateTime?
+
   roles         UserRole[]
   refreshTokens RefreshToken[]
 }
@@ -114,6 +120,101 @@ model Job {
   updatedAt     DateTime  @updatedAt
 
   @@index([handlerKey])
+}
+
+// ============ 通用能力 ============
+
+// 系统参数：运行时可改的配置（不必改 env 重启），带进程内缓存
+model SysConfig {
+  key         String   @id @db.VarChar(100)
+  value       String   @db.VarChar(2000)
+  type        String   @default("STRING") @db.VarChar(20) // STRING / NUMBER / BOOL / JSON
+  group       String   @default("base") @db.VarChar(50)   // 分组（前端按组展示）
+  label       String   @db.VarChar(100)
+  builtin     Boolean  @default(false)  // 内置项：不允许删除，部分只读
+  remark      String?  @db.VarChar(255)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("sys_config")
+}
+
+// 数据字典：类型 + 项（下拉选项统一来源，前端缓存复用）
+model Dict {
+  id        Int       @id @default(autoincrement())
+  code      String    @unique @db.VarChar(50)  // 字典类型编码，如 user_status
+  name      String    @db.VarChar(50)
+  status    String    @default("ENABLED") @db.VarChar(20)
+  remark    String?   @db.VarChar(255)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  items DictItem[]
+
+  @@map("dict")
+}
+
+model DictItem {
+  id       Int      @id @default(autoincrement())
+  dictId   Int
+  label    String   @db.VarChar(100)
+  value    String   @db.VarChar(100)
+  sort     Int      @default(0)
+  status   String   @default("ENABLED") @db.VarChar(20)
+  remark   String?  @db.VarChar(255)
+  dict     Dict     @relation(fields: [dictId], references: [id], onDelete: Cascade)
+
+  @@unique([dictId, value])
+  @@index([dictId])
+  @@map("dict_item")
+}
+
+// 文件管理：只保存元信息，实体存放在 UPLOAD_DIR（默认 shared/uploads）
+model File {
+  id         Int      @id @default(autoincrement())
+  name       String   @db.VarChar(255)  // 原始文件名
+  path       String   @db.VarChar(255)  // 相对存储目录的路径（按 yyyyMM 分目录）
+  mime       String   @db.VarChar(100)
+  size       Int
+  uploaderId Int?
+  createdAt  DateTime @default(now())
+  deletedAt  DateTime? // 软删除（清理任务可定期物理删除）
+
+  @@index([uploaderId])
+  @@index([deletedAt])
+  @@map("file")
+}
+
+// 通知公告：置顶 + 有效期 + 已读记录
+model Notice {
+  id         Int      @id @default(autoincrement())
+  title      String   @db.VarChar(200)
+  content    String   @db.Text
+  type       String   @default("NOTICE") @db.VarChar(20) // NOTICE 公告 / MSG 消息
+  top        Boolean  @default(false)
+  status     String   @default("DRAFT") @db.VarChar(20)  // DRAFT 草稿 / PUBLISHED 已发布
+  startAt    DateTime?
+  endAt      DateTime?
+  publisherId Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  reads NoticeRead[]
+
+  @@index([status])
+  @@map("notice")
+}
+
+model NoticeRead {
+  id       Int      @id @default(autoincrement())
+  noticeId Int
+  userId   Int
+  readAt   DateTime @default(now())
+  notice   Notice   @relation(fields: [noticeId], references: [id], onDelete: Cascade)
+
+  @@unique([noticeId, userId])
+  @@index([userId])
+  @@map("notice_read")
 }
 
 // ============ 分布式锁(LOCK_DRIVER=db 时使用) ============

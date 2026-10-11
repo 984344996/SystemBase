@@ -1,6 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
 import type { AuthUser } from './jwt.strategy';
+
+/** 权限失效广播频道（LOCK_DRIVER=redis 时启用） */
+const CHANNEL = 'sb:perm:invalidate';
 
 /** 查库前取的版本快照，写回时比对，防止「失效前发起的查询」把旧数据写回缓存 */
 export interface CacheTicket {
@@ -25,14 +29,45 @@ const MAX_ENTRIES = 10_000;
  * - 多实例：其他实例最多延迟 PERMISSION_CACHE_TTL 秒（默认 30）生效；要求强一致可设为 0 关闭缓存
  */
 @Injectable()
-export class PermissionCacheService {
+export class PermissionCacheService implements OnModuleDestroy {
   private readonly ttlMs: number;
   private readonly entries = new Map<number, Entry>();
   private globalVersion = 0;
   private readonly userVersions = new Map<number, number>();
 
+  /**
+   * 多实例一致性：LOCK_DRIVER=redis 时通过 Redis pub/sub 广播失效事件，
+   * 让其他实例立即丢弃缓存（否则要等 PERMISSION_CACHE_TTL 秒才生效）。
+   * Redis 不可用时自动退化为「仅本实例失效」，不影响功能。
+   */
+  private readonly broadcastEnabled: boolean;
+  private pub: Redis | null = null;
+  private sub: Redis | null = null;
+
   constructor(config: ConfigService) {
     this.ttlMs = Math.max(0, Number(config.get<string>('PERMISSION_CACHE_TTL') ?? 30)) * 1000;
+    this.broadcastEnabled = config.get<string>('LOCK_DRIVER') === 'redis';
+    if (this.broadcastEnabled) {
+      const url = config.get<string>('REDIS_URL') || 'redis://localhost:6379';
+      const opts = { lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null as any } as const;
+      this.pub = new Redis(url, opts);
+      this.sub = new Redis(url, opts);
+      this.pub.connect().catch(() => undefined);
+      this.sub
+        .connect()
+        .then(() =>
+          this.sub?.subscribe(CHANNEL).then(() =>
+            // 收到广播：本地执行失效（不回播，避免循环）
+            this.sub?.on('message', (_ch, payload) => this.applyRemote(payload)),
+          ),
+        )
+        .catch(() => undefined);
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.pub?.quit().catch(() => undefined);
+    await this.sub?.quit().catch(() => undefined);
   }
 
   get enabled(): boolean {
@@ -65,6 +100,7 @@ export class PermissionCacheService {
   invalidateUser(userId: number): void {
     this.entries.delete(userId);
     this.userVersions.set(userId, (this.userVersions.get(userId) ?? 0) + 1);
+    this.publish(`user:${userId}`);
   }
 
   /** 角色/菜单(权限点)变更后调用：影响面无法精确计算，全部失效 */
@@ -72,6 +108,27 @@ export class PermissionCacheService {
     this.globalVersion++;
     this.entries.clear();
     this.userVersions.clear(); // 全局版本已变，旧的用户版本不再有意义
+    this.publish('all');
+  }
+
+  /** 广播失效事件（多实例）：失败静默，退化为仅本实例失效 */
+  private publish(payload: string): void {
+    if (!this.broadcastEnabled || !this.pub) return;
+    this.pub.publish(CHANNEL, payload).catch(() => undefined);
+  }
+
+  /** 处理其他实例广播过来的失效事件：只改本地，不再广播 */
+  private applyRemote(payload: string): void {
+    if (payload === 'all') {
+      this.globalVersion++;
+      this.entries.clear();
+      this.userVersions.clear();
+      return;
+    }
+    const id = Number(payload.replace('user:', ''));
+    if (!Number.isInteger(id)) return;
+    this.entries.delete(id);
+    this.userVersions.set(id, (this.userVersions.get(id) ?? 0) + 1);
   }
 
   private prune(): void {

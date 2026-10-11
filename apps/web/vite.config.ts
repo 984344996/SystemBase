@@ -6,6 +6,10 @@ import Components from "unplugin-vue-components/vite";
 import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 
 export default defineConfig({
+  // 子路径部署（如 https://域名/systembase-pre）：deploy.sh 构建时注入 SB_BASE_PATH（带尾斜杠）；
+  // 路由必须显式 createWebHistory(import.meta.env.BASE_URL)（不传则默认站点根路径 "/"，跳转会跳出子路径），
+  // API 前缀见 src/utils/request.ts，三者统一跟随 base
+  base: process.env.SB_BASE_PATH || "/",
   plugins: [
     vue(),
     // Element Plus 按需引入：API(ref/computed/ElMessage 等) + 组件自动注册

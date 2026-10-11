@@ -10,12 +10,14 @@ import { ModuleRef } from '@nestjs/core';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import * as cronParser from 'cron-parser';
+import { withUniqueViolation } from '../../core/prisma/prisma-error.util';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { AppLogger } from '../../core/logger/logger.service';
 import { LogReaderService } from '../../core/logger/log-reader.service';
 import { formatLocalTime } from '../../core/logger/log-streams';
 import { runWithTraceId } from '../../core/logger/trace.context';
 import { LockService } from '../../core/lock/lock.service';
+import { MetricsService } from '../../core/metrics/metrics.service';
 import { JOB_HANDLERS, JobHandler, JobContext } from './job-registry';
 import { CreateJobDto, QueryJobLogDto, UpdateJobDto } from './job.dto';
 
@@ -31,6 +33,7 @@ export class JobService implements OnModuleInit {
     private readonly scheduler: SchedulerRegistry,
     private readonly config: ConfigService,
     private readonly logReader: LogReaderService,
+    private readonly metrics?: MetricsService, // 可选：避免破坏既有单测的构造调用
   ) {}
 
   // ---------- 启动时重建全部调度 ----------
@@ -80,18 +83,23 @@ export class JobService implements OnModuleInit {
     const exists = await this.prisma.job.findUnique({ where: { name: dto.name } });
     if (exists) throw new BadRequestException(`任务名「${dto.name}」已存在`);
 
-    const job = await this.prisma.job.create({
-      data: {
-        name: dto.name,
-        handlerKey: dto.handlerKey,
-        cronExpr: dto.cronExpr,
-        params: dto.params ? JSON.parse(dto.params) : undefined,
-        misfirePolicy: dto.misfirePolicy || 'SKIP',
-        timeoutSec: dto.timeoutSec ?? 300,
-        remark: dto.remark,
-        status: 'ENABLED',
-      },
-    });
+    // 并发竞态兜底：撞唯一约束(P2002)时转友好提示而非 500
+    const job = await withUniqueViolation(
+      () =>
+        this.prisma.job.create({
+          data: {
+            name: dto.name,
+            handlerKey: dto.handlerKey,
+            cronExpr: dto.cronExpr,
+            params: dto.params ? JSON.parse(dto.params) : undefined,
+            misfirePolicy: dto.misfirePolicy || 'SKIP',
+            timeoutSec: dto.timeoutSec ?? 300,
+            remark: dto.remark,
+            status: 'ENABLED',
+          },
+        }),
+      `任务名「${dto.name}」已存在`,
+    );
     await this.schedule(job.id, job.cronExpr);
     return job;
   }
@@ -252,6 +260,8 @@ export class JobService implements OnModuleInit {
     const fields = { ...base, status, startedAt: formatLocalTime(startedAt), costMs, result, error };
     if (status === 'SUCCESS') this.appLogger.job(fields, `任务执行成功: ${job.name}`);
     else this.appLogger.jobError(fields, `任务执行${status === 'TIMEOUT' ? '超时' : '失败'}: ${job.name}`);
+    // 指标：/api/metrics 的 sb_job_runs_total
+    this.metrics?.incJob(job.handlerKey, status === 'SUCCESS');
     return { skipped: false, status, result, error, costMs };
   }
 

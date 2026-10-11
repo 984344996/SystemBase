@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  HttpException,
+  HttpStatus,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -8,10 +10,14 @@ import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes } from 'node:crypto';
 import * as bcrypt from 'bcryptjs';
 import { Request } from 'express';
+import { Menu } from '@prisma/client';
+import { buildTree } from '@sb/shared';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { AppLogger } from '../../core/logger/logger.service';
 import { AuthUser } from '../../core/security/jwt.strategy';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
+import { LoginGuardService } from '../../core/security/login-guard.service';
+import { checkPasswordStrength, isPasswordExpired, readPasswordPolicy } from '../../core/security/password-policy';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
@@ -31,6 +37,18 @@ export function parseDuration(s: string): number {
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 
+/**
+ * 密码可用性校验（策略 + 不得与旧密码相同）：不通过直接抛 400，错误信息可直接展示给用户。
+ * 管理员重置与用户自助改密共用同一套规则。
+ */
+export function assertPasswordUsable(newPassword: string, username: string, oldHash?: string): void {
+  const problems = checkPasswordStrength(newPassword, username, readPasswordPolicy());
+  if (problems.length) throw new BadRequestException(problems.join('；'));
+  if (oldHash && bcrypt.compareSync(newPassword, oldHash)) {
+    throw new BadRequestException('新密码不能与当前密码相同');
+  }
+}
+
 @Injectable()
 export class AuthService {
   /**
@@ -45,10 +63,25 @@ export class AuthService {
     private readonly config: ConfigService,
     private readonly logger: AppLogger,
     private readonly permCache: PermissionCacheService,
+    private readonly guard: LoginGuardService,
   ) {}
 
   // ---------- 登录 ----------
   async login(dto: LoginDto, req: Request) {
+    const key = LoginGuardService.keyOf(dto.username, req.ip);
+    this.guard.assertNotLocked(key); // 连续失败过多：直接拒绝（429）
+
+    // 验证码：配置要求时必须校验（缺 id 时提示前端拉取验证码）
+    if (this.guard.captchaRequired(key)) {
+      const needCaptcha = !dto.captchaId || !this.guard.verifyCaptcha(dto.captchaId, dto.captchaCode || '');
+      if (needCaptcha) {
+        throw new HttpException(
+          { needCaptcha: true, message: '请输入验证码' },
+          HttpStatus.PRECONDITION_FAILED,
+        );
+      }
+    }
+
     const user = await this.prisma.user.findFirst({ where: { username: dto.username, deletedAt: null } });
     // 无论用户是否存在都执行一次 bcrypt，避免通过响应时间枚举用户名
     const passwordOk = await bcrypt.compare(dto.password, user?.password ?? AuthService.DUMMY_HASH);
@@ -56,11 +89,27 @@ export class AuthService {
 
     // 日志里记录具体原因便于排障；对外响应统一模糊提示，防止用户名枚举
     const reason = ok ? '登录成功' : !user ? '账号不存在' : user.status !== 'ENABLED' ? '账号已禁用' : '密码错误';
-    this.auditLogin(user?.id, dto.username, ok, reason, req);
-    if (!ok) throw new UnauthorizedException('用户名或密码错误');
+    if (!ok) {
+      this.guard.recordFailure(key); // 失败计数（达到阈值则锁定）
+      this.auditLogin(user?.id, dto.username, false, reason, req);
+      throw new UnauthorizedException('用户名或密码错误');
+    }
+    this.guard.clearFailures(key);
+    this.auditLogin(user.id, dto.username, true, '登录成功', req);
 
     const pair = await this.issueTokens(user.id, user.username, user.name, req);
-    return { ...pair, user: { id: user.id, username: user.username, name: user.name } };
+    return {
+      ...pair,
+      user: { id: user.id, username: user.username, name: user.name },
+      // 前端据此跳强制改密页；密码过期时提示尽快修改（不阻断，但前端会提示）
+      mustChangePassword: user.mustChangePassword,
+      passwordExpired: isPasswordExpired(user.pwdUpdatedAt),
+    };
+  }
+
+  /** 签发登录验证码（LOGIN_CAPTCHA=off 或未安装 svg-captcha 时返回 null） */
+  captcha() {
+    return this.guard.issueCaptcha();
   }
 
   // ---------- 刷新令牌（轮换：旧 refreshToken 用后即废） ----------
@@ -73,10 +122,7 @@ export class AuthService {
 
     // 重放检测：已作废的 refreshToken 再次出现（疑似泄露），吊销该用户全部登录态，强制全端重登
     if (record.revokedAt) {
-      await this.prisma.refreshToken.updateMany({
-        where: { userId: record.userId, revokedAt: null },
-        data: { revokedAt: new Date() },
-      });
+      await this.revokeAllRefreshTokens(record.userId);
       this.logger.audit(
         { event: 'token_replay', userId: record.userId, username: record.user.username, ip: req.ip, ua: this.ua(req) },
         `已作废的 refreshToken 被重复使用，疑似泄露，已吊销用户 ${record.user.username} 全部登录态`,
@@ -121,6 +167,9 @@ export class AuthService {
       roles: detail.roles.map((r) => r.role.name),
       roleCodes: detail.roles.map((r) => r.role.code),
       permissions: user.roles.includes('SUPER_ADMIN') ? ['*'] : user.permissions,
+      // 前端据此决定是否拦截到强制改密页（刷新页面后依然有效）
+      mustChangePassword: detail.mustChangePassword,
+      passwordExpired: isPasswordExpired(detail.pwdUpdatedAt),
     };
   }
 
@@ -162,10 +211,18 @@ export class AuthService {
     if (!detail || !(await bcrypt.compare(oldPassword, detail.password))) {
       throw new BadRequestException('原密码不正确');
     }
+    assertPasswordUsable(newPassword, detail.username, detail.password);
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: user.id }, data: { password: await bcrypt.hash(newPassword, 10) } }),
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          password: await bcrypt.hash(newPassword, 10),
+          mustChangePassword: false, // 已自行改密，解除强制改密
+          pwdUpdatedAt: new Date(),
+        },
+      }),
       // 全端踢下线：吊销所有 refreshToken
-      this.prisma.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } }),
+      this.revokeAllRefreshTokens(user.id),
     ]);
     return { success: true };
   }
@@ -200,18 +257,16 @@ export class AuthService {
     return (req.headers['user-agent'] || '').slice(0, 250);
   }
 
-  private buildTree(menus: { id: number; parentId: number | null }[]) {
-    const map = new Map<number, any>();
-    menus.forEach((m) => map.set(m.id, { ...m, children: [] }));
-    const roots: any[] = [];
-    map.forEach((node) => {
-      const parent = node.parentId ? map.get(node.parentId) : null;
-      if (parent) parent.children.push(node);
-      else roots.push(node);
+  /** 吊销该用户全部未作废的 refreshToken（全端下线） */
+  private revokeAllRefreshTokens(userId: number) {
+    return this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
     });
-    // 递归剔除没有可访问子节点的空目录
-    const prune = (nodes: any[]): any[] =>
-      nodes.filter((n) => n.type === 'MENU' || (n.children.length > 0 && (n.children = prune(n.children))));
-    return prune(roots);
+  }
+
+  private buildTree(menus: Menu[]) {
+    // 递归剔除没有可访问子节点的空目录（先修剪 children，再判断保留）
+    return buildTree(menus, (n) => n.type === 'MENU' || n.children.length > 0);
   }
 }

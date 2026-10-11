@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { LogEntry, LogReaderService } from '../../core/logger/log-reader.service';
+import { LogEntry, LogReaderService, LogSource } from '../../core/logger/log-reader.service';
 import { QueryLogDto, QueryLoginLogDto, QueryOperateLogDto } from './monitor.dto';
 
 const includes = (v: unknown, kw: string) => typeof v === 'string' && v.includes(kw);
@@ -24,13 +24,14 @@ export class MonitorService {
       category: q.category,
       keyword: q.keyword,
       traceId: q.traceId,
+      source: (q.source as LogSource) || 'server',
       page: q.page,
       pageSize: q.pageSize,
     });
   }
 
-  downloadPath(date?: string) {
-    return this.reader.existingFile(date);
+  downloadPath(date?: string, source?: string) {
+    return this.reader.existingFile(date, (source as LogSource) || 'server');
   }
 
   loginLogs(q: QueryLoginLogDto) {

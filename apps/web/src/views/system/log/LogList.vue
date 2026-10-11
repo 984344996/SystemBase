@@ -1,13 +1,32 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
+      <!-- 后端日志 app.*.log 与前端日志 web.*.log 分开存放，前端错误由浏览器上报 -->
+      <el-radio-group v-model="query.source" size="small" @change="search">
+        <el-radio-button value="server">后端日志</el-radio-button>
+        <el-radio-button value="client">前端日志</el-radio-button>
+      </el-radio-group>
       <el-select v-model="query.date" placeholder="日期" style="width: 190px" @change="search">
         <el-option v-for="f in files" :key="f.date" :label="`${f.date}（${formatSize(f.size)}）`" :value="f.date" />
       </el-select>
-      <el-select v-model="query.level" placeholder="级别" clearable style="width: 110px" @change="search">
+      <el-select
+        v-if="query.source === 'server'"
+        v-model="query.level"
+        placeholder="级别"
+        clearable
+        style="width: 110px"
+        @change="search"
+      >
         <el-option v-for="l in LOG_LEVEL_OPTIONS" :key="l" :label="l" :value="l" />
       </el-select>
-      <el-select v-model="query.category" placeholder="分类" clearable style="width: 110px" @change="search">
+      <el-select
+        v-if="query.source === 'server'"
+        v-model="query.category"
+        placeholder="分类"
+        clearable
+        style="width: 110px"
+        @change="search"
+      >
         <el-option v-for="c in LOG_CATEGORY_OPTIONS" :key="c.value" :label="c.label" :value="c.value" />
       </el-select>
       <el-input v-model="query.traceId" placeholder="traceId" clearable style="width: 220px" @keyup.enter="search" />
@@ -54,18 +73,16 @@
       <el-table-column label="消息" min-width="320" show-overflow-tooltip>
         <template #default="{ row }">
           <span v-if="row.context" class="muted">[{{ row.context }}] </span>{{ row.msg }}
+          <div v-if="row.url" class="muted mini">{{ row.url }}</div>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-pagination
-      v-model:current-page="query.page"
-      v-model:page-size="query.pageSize"
+    <TablePager
+      :query="query"
       :total="Math.min(total, 5000)"
+      :load="load"
       :page-sizes="[20, 50, 100]"
-      layout="total, prev, pager, next, sizes"
-      style="margin-top: 12px; justify-content: flex-end"
-      @change="load"
     />
   </div>
 </template>
@@ -82,7 +99,16 @@ const rows = ref<LogEntry[]>([]);
 const total = ref(0);
 const truncated = ref(false);
 const loading = ref(false);
-const query = reactive({ date: today(), level: "", category: "", traceId: "", keyword: "", page: 1, pageSize: 20 });
+const query = reactive({
+  date: today(),
+  source: "server" as "server" | "client",
+  level: "",
+  category: "",
+  traceId: "",
+  keyword: "",
+  page: 1,
+  pageSize: 20,
+});
 
 function categoryLabel(v?: string) {
   return LOG_CATEGORY_OPTIONS.find((c) => c.value === v)?.label || v || "-";
@@ -93,8 +119,10 @@ async function load() {
   try {
     const res = await monitorApi.logs({
       date: query.date,
-      level: query.level || undefined,
-      category: query.category || undefined,
+      source: query.source,
+      // 前端日志没有 category 分类，级别过滤也仅在后端日志下有意义
+      level: query.source === "server" ? query.level || undefined : undefined,
+      category: query.source === "server" ? query.category || undefined : undefined,
       traceId: query.traceId.trim() || undefined,
       keyword: query.keyword || undefined,
       page: query.page,
@@ -120,8 +148,9 @@ function filterTrace(traceId: string) {
 }
 
 async function download() {
-  const blob = await monitorApi.download(query.date);
-  saveBlob(blob, `app.${query.date}.log`);
+  const blob = await monitorApi.download(query.date, query.source);
+  const prefix = query.source === "client" ? "web" : "app";
+  saveBlob(blob, `${prefix}.${query.date}.log`);
   ElMessage.success("已开始下载");
 }
 
@@ -133,8 +162,9 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.muted {
-  color: #8a97a8;
+.mini {
+  font-size: 12px;
+  margin-top: 2px;
 }
 .log-json {
   margin: 0;

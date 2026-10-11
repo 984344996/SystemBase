@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# ============================================================
+# git pre-commit 钩子（由 ./sb.sh setup-hooks 启用：git config core.hooksPath .githooks）
+#
+# 作用：每次 git commit 前自动执行
+#   1. pnpm lint   全包类型检查（vue-tsc / tsc）+ prisma schema 校验
+#   2. pnpm test   后端单元测试
+# 任一失败即中断提交，避免把编译不过或测试红的代码提交进去。
+#
+# 临时跳过：SKIP_HOOKS=1 git commit -m "..."
+# 手动执行：bash .githooks/pre-commit
+# ============================================================
+# ============================================================
+# git pre-commit 钩子（由 ./sb.sh setup-hooks 启用：git config core.hooksPath .githooks）
+#
+# 作用：每次 git commit 前自动执行
+#   1. pnpm lint   全包类型检查（vue-tsc / tsc）+ prisma schema 校验
+#   2. pnpm test   后端单元测试
+# 任一失败即中断提交，避免把编译不过/测试红的代码提交进去。
+#
+# 临时跳过：SKIP_HOOKS=1 git commit -m "..."
+# 手动执行：bash .githooks/pre-commit
+# ============================================================
+# ============================================================
+# pre-commit 卡口：提交前跑类型检查（含 prisma validate）与单元测试
+# 启用: ./sb.sh setup-hooks     临时跳过: SKIP_HOOKS=1 git commit ...
+# 说明: 不引入 husky 等依赖，只用 git 自身的 core.hooksPath
+# ============================================================
+set -euo pipefail
+
+[ "${SKIP_HOOKS:-0}" = 1 ] && { echo "==> pre-commit: SKIP_HOOKS=1，已跳过"; exit 0; }
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "非 git 仓库，跳过"; exit 0; }
+cd "$ROOT"
+
+echo "==> pre-commit: 类型检查（pnpm lint）"
+pnpm lint
+
+echo "==> pre-commit: 单元测试（pnpm test）"
+pnpm test --silent
+
+echo "==> pre-commit: 通过"

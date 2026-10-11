@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AppLogger } from './core/logger/logger.service';
 import { bodyParserErrorHandler } from './core/filter/body-parser-error.handler';
+import { setupSwagger, shouldEnableSwagger } from './core/swagger';
 
 /**
  * TRUST_PROXY 解析：
@@ -25,7 +26,7 @@ async function bootstrap() {
   // bodyParser 关闭默认实现，下面按 BODY_LIMIT 显式注册（默认 100kb 对导入类接口偏小，且上限应可配）
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bufferLogs: true, bodyParser: false });
 
-  // 优雅退出：SIGTERM 时执行各模块 onModuleDestroy（断开数据库/Redis），docker stop 不丢现场
+  // 优雅退出：SIGTERM 时执行各模块 onModuleDestroy（断开数据库/Redis），进程停止不丢现场
   app.enableShutdownHooks();
 
   // 框架内部日志统一走 pino(按天滚动文件)
@@ -33,6 +34,8 @@ async function bootstrap() {
 
   const config = app.get(ConfigService);
   const isProd = config.get('NODE_ENV') === 'production';
+  // API 文档开启时 CSP 需放宽（Swagger UI 要加载自身脚本/样式），生产默认关闭故仍是最严策略
+  const swaggerOn = shouldEnableSwagger(isProd);
 
   // 反向代理场景必须开启：否则 req.ip 永远取到的是代理 IP，
   // 全局限流会变成全站共享额度、登录/审计日志记录的 IP 全部失真
@@ -42,7 +45,17 @@ async function bootstrap() {
   app.disable('x-powered-by');
   app.use(
     helmet({
-      contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
+      contentSecurityPolicy: swaggerOn
+        ? {
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: ["'self'", "'unsafe-inline'"],
+              styleSrc: ["'self'", "'unsafe-inline'"],
+              imgSrc: ["'self'", 'data:'],
+              frameAncestors: ["'none'"],
+            },
+          }
+        : { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } },
       crossOriginResourcePolicy: { policy: 'same-site' },
       hsts: isProd ? { maxAge: 15552000, includeSubDomains: true } : false,
     }),
@@ -76,9 +89,12 @@ async function bootstrap() {
     }),
   );
 
+  // API 文档（可选，依赖 @nestjs/swagger）：/api/docs
+  const logger = app.get(AppLogger);
+  setupSwagger(app, isProd, logger);
+
   const port = Number(config.get('PORT')) || 3000;
   await app.listen(port);
-  const logger = app.get(AppLogger);
   logger.info({ port, env: config.get('NODE_ENV') }, `SystemBase 后端已启动`);
 }
 bootstrap();

@@ -2,6 +2,9 @@ import request from "@/utils/request";
 import type { MenuNode } from "./auth";
 import type { PageResult } from "@sb/shared";
 
+/** 删除类接口的统一返回 */
+export type DeleteResult = { success: boolean };
+
 // ---------- 用户 ----------
 export interface UserRow {
   id: number;
@@ -17,11 +20,13 @@ export interface UserRow {
 
 export const userApi = {
   list: (params: Record<string, unknown>) => request.get<never, PageResult<UserRow>>("/users", { params }),
-  create: (data: Record<string, unknown>) => request.post<never, UserRow>("/users", data),
-  update: (id: number, data: Record<string, unknown>) => request.put<never, UserRow>(`/users/${id}`, data),
-  remove: (id: number) => request.delete<never, { success: boolean }>(`/users/${id}`),
+  create: (data: Partial<UserRow> & { password: string; roleIds?: number[] }) =>
+    request.post<never, UserRow>("/users", data),
+  update: (id: number, data: Partial<UserRow> & { password?: string; roleIds?: number[] }) =>
+    request.put<never, UserRow>(`/users/${id}`, data),
+  remove: (id: number) => request.delete<never, DeleteResult>(`/users/${id}`),
   resetPassword: (id: number, newPassword: string) =>
-    request.put<never, { success: boolean }>(`/users/${id}/password`, { newPassword }),
+    request.put<never, DeleteResult>(`/users/${id}/password`, { newPassword }),
 };
 
 // ---------- 角色 ----------
@@ -40,20 +45,22 @@ export const roleApi = {
   all: () => request.get<never, { id: number; code: string; name: string }[]>("/roles/all"),
   detail: (id: number) => request.get<never, RoleRow>(`/roles/${id}`),
   menuTree: () => request.get<never, MenuNode[]>("/roles/menu-tree"),
-  create: (data: Record<string, unknown>) => request.post<never, RoleRow>("/roles", data),
-  update: (id: number, data: Record<string, unknown>) => request.put<never, RoleRow>(`/roles/${id}`, data),
-  remove: (id: number) => request.delete<never, { success: boolean }>(`/roles/${id}`),
+  create: (data: Partial<RoleRow>) => request.post<never, RoleRow>("/roles", data),
+  update: (id: number, data: Partial<RoleRow>) => request.put<never, RoleRow>(`/roles/${id}`, data),
+  remove: (id: number) => request.delete<never, DeleteResult>(`/roles/${id}`),
 };
 
 // ---------- 菜单 ----------
 export const menuApi = {
   tree: () => request.get<never, MenuNode[]>("/menus"),
-  create: (data: Record<string, unknown>) => request.post<never, MenuNode>("/menus", data),
-  update: (id: number, data: Record<string, unknown>) => request.put<never, MenuNode>(`/menus/${id}`, data),
-  remove: (id: number) => request.delete<never, { success: boolean }>(`/menus/${id}`),
+  create: (data: Partial<MenuNode>) => request.post<never, MenuNode>("/menus", data),
+  update: (id: number, data: Partial<MenuNode>) => request.put<never, MenuNode>(`/menus/${id}`, data),
+  remove: (id: number) => request.delete<never, DeleteResult>(`/menus/${id}`),
 };
 
-// ---------- 日志（全部来自日志文件 app.YYYY-MM-DD.log，只读） ----------
+// ---------- 日志（来自日志文件，只读；后端 app.YYYY-MM-DD.log / 前端 web.YYYY-MM-DD.log） ----------
+/** 日志来源：server=后端日志 / client=前端（浏览器）日志，两者分开存放 */
+export type LogSource = "server" | "client";
 /** 日志文件中的一行：固定字段 + 各分类的业务字段 */
 export interface LogEntry {
   level: "DEBUG" | "INFO" | "WARN" | "ERROR" | "FATAL" | string;
@@ -93,8 +100,12 @@ export type LogPage<T> = PageResult<T> & { date: string; truncated: boolean };
 export const monitorApi = {
   dates: () => request.get<never, { date: string; size: number }[]>("/monitor/logs/dates"),
   logs: (params: Record<string, unknown>) => request.get<never, LogPage<LogEntry>>("/monitor/logs", { params }),
-  download: (date: string) =>
-    request.get<never, Blob>("/monitor/logs/download", { params: { date }, responseType: "blob", timeout: 120000 }),
+  download: (date: string, source: LogSource = "server") =>
+    request.get<never, Blob>("/monitor/logs/download", {
+      params: { date, source },
+      responseType: "blob",
+      timeout: 120000,
+    }),
   loginLogs: (params: Record<string, unknown>) =>
     request.get<never, LogPage<LoginLogRow>>("/monitor/login-logs", { params }),
   operateLogs: (params: Record<string, unknown>) =>
@@ -134,9 +145,9 @@ export const jobApi = {
   list: () => request.get<never, JobRow[]>("/jobs"),
   handlers: () => request.get<never, { key: string }[]>("/jobs/handlers"),
   logs: (params: Record<string, unknown>) => request.get<never, LogPage<JobLogRow>>("/jobs/logs", { params }),
-  create: (data: Record<string, unknown>) => request.post<never, JobRow>("/jobs", data),
-  update: (id: number, data: Record<string, unknown>) => request.put<never, JobRow>(`/jobs/${id}`, data),
+  create: (data: Partial<JobRow> & { params?: string }) => request.post<never, JobRow>("/jobs", data),
+  update: (id: number, data: Partial<JobRow> & { params?: string }) => request.put<never, JobRow>(`/jobs/${id}`, data),
   toggle: (id: number) => request.put<never, JobRow>(`/jobs/${id}/toggle`),
-  remove: (id: number) => request.delete<never, { success: boolean }>(`/jobs/${id}`),
+  remove: (id: number) => request.delete<never, DeleteResult>(`/jobs/${id}`),
   run: (id: number) => request.post<never, { status: string; result?: string; error?: string }>(`/jobs/${id}/run`),
 };

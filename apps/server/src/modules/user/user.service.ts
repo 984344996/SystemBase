@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { withUniqueViolation } from '../../core/prisma/prisma-error.util';
 import { paginate } from '../../core/pagination/paginate';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
+import { assertPasswordUsable } from '../auth/auth.service';
 import { CreateUserDto, QueryUserDto, UpdateUserDto } from './user.dto';
 
 /**
@@ -49,22 +51,21 @@ export class UserService {
     const exists = await this.prisma.user.findUnique({ where: { username: dto.username } });
     if (exists) throw new BadRequestException(`用户名「${dto.username}」已存在`);
     const { roleIds, password, ...data } = dto;
-    try {
-      return await this.prisma.user.create({
-        data: {
-          ...data,
-          password: await bcrypt.hash(password, 10),
-          ...(roleIds?.length
-            ? { roles: { create: roleIds.map((roleId) => ({ roleId })) } }
-            : {}),
-        },
-        select: USER_SELECT,
-      });
-    } catch (e) {
-      // 并发竞态兜底：查重通过但另一请求抢先写入，撞唯一约束(P2002)时转友好提示而非 500
-      if (this.isUniqueViolation(e)) throw new BadRequestException(`用户名「${dto.username}」已存在`);
-      throw e;
-    }
+    // 并发竞态兜底：查重通过但另一请求抢先写入，撞唯一约束(P2002)时转友好提示而非 500
+    return withUniqueViolation(
+      async () =>
+        this.prisma.user.create({
+          data: {
+            ...data,
+            password: await bcrypt.hash(password, 10),
+            ...(roleIds?.length
+              ? { roles: { create: roleIds.map((roleId) => ({ roleId })) } }
+              : {}),
+          },
+          select: USER_SELECT,
+        }),
+      `用户名「${dto.username}」已存在`,
+    );
   }
 
   async update(id: number, dto: UpdateUserDto) {
@@ -95,7 +96,7 @@ export class UserService {
     await this.assertNotLastSuperAdmin(id, { disable: true });
     await this.prisma.$transaction([
       this.prisma.user.update({ where: { id }, data: { deletedAt: new Date() } }),
-      this.prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
+      this.revokeAllRefreshTokens(id),
     ]);
     this.permCache.invalidateUser(id); // 已删除用户的 accessToken 立即失效
     return { success: true };
@@ -104,17 +105,30 @@ export class UserService {
   async resetPassword(id: number, newPassword: string) {
     const user = await this.prisma.user.findFirst({ where: { id, deletedAt: null } });
     if (!user) throw new NotFoundException('用户不存在');
+    assertPasswordUsable(newPassword, user.username, user.password);
     await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id }, data: { password: await bcrypt.hash(newPassword, 10) } }),
-      this.prisma.refreshToken.updateMany({ where: { userId: id, revokedAt: null }, data: { revokedAt: new Date() } }),
+      this.prisma.user.update({
+        where: { id },
+        data: {
+          password: await bcrypt.hash(newPassword, 10),
+          // 管理员重置的密码是临时密码，登录后强制改密
+          mustChangePassword: true,
+          pwdUpdatedAt: new Date(),
+        },
+      }),
+      this.revokeAllRefreshTokens(id), // 重置密码后旧登录态全部失效
     ]);
     return { success: true };
   }
 
   // ---------- 内部 ----------
 
-  private isUniqueViolation(e: unknown): boolean {
-    return typeof e === 'object' && e !== null && (e as { code?: string }).code === 'P2002';
+  /** 吊销该用户全部未作废的 refreshToken（全端下线） */
+  private revokeAllRefreshTokens(userId: number) {
+    return this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 
   /**

@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { buildTree } from '@sb/shared';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { MenuDto } from './menu.dto';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
@@ -13,15 +14,7 @@ export class MenuService {
   /** 全量菜单树（菜单管理页数据源） */
   async tree() {
     const menus = await this.prisma.menu.findMany({ orderBy: [{ sort: 'asc' }, { id: 'asc' }] });
-    const map = new Map<number, any>();
-    menus.forEach((m) => map.set(m.id, { ...m, children: [] }));
-    const roots: any[] = [];
-    map.forEach((node) => {
-      const parent = node.parentId ? map.get(node.parentId) : null;
-      if (parent) parent.children.push(node);
-      else roots.push(node);
-    });
-    return roots;
+    return buildTree(menus);
   }
 
   async create(dto: MenuDto) {

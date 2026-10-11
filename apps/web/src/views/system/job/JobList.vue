@@ -3,7 +3,7 @@
     <div class="toolbar">
       <span class="muted">任务 cron 存数据库，增删改即时生效，无需重启服务</span>
       <div class="spacer" />
-      <el-button v-if="auth.hasPerm('system:job:create')" type="primary" plain @click="openCreate">新增任务</el-button>
+      <el-button v-permission="'system:job:create'" type="primary" plain @click="openCreate">新增任务</el-button>
     </div>
 
     <el-table :data="rows" border stripe>
@@ -26,20 +26,20 @@
       </el-table-column>
       <el-table-column label="上次/下次执行" width="180">
         <template #default="{ row }">
-          <div class="mini">上: {{ fmt(row.prevRunAt) }}</div>
-          <div class="mini">下: {{ fmt(row.nextRunAt) }}</div>
+          <div class="mini">上: {{ formatTime(row.prevRunAt) }}</div>
+          <div class="mini">下: {{ formatTime(row.nextRunAt) }}</div>
         </template>
       </el-table-column>
       <el-table-column prop="timeoutSec" label="超时(s)" width="85" />
       <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
       <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="auth.hasPerm('system:job:run') && row.handlerExists" link type="success" @click="runNow(row)">立即执行</el-button>
+          <el-button v-if="row.handlerExists" v-permission="'system:job:run'" link type="success" @click="runNow(row)">立即执行</el-button>
           <el-button link type="primary" @click="openLogs(row)">日志</el-button>
-          <el-button v-if="auth.hasPerm('system:job:update')" link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-permission="'system:job:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-popconfirm title="确定删除该任务吗？" @confirm="remove(row)">
             <template #reference>
-              <el-button v-if="auth.hasPerm('system:job:delete')" link type="danger">删除</el-button>
+              <el-button v-permission="'system:job:delete'" link type="danger">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
@@ -100,7 +100,7 @@
           </template>
         </el-table-column>
         <el-table-column label="开始时间" width="160">
-          <template #default="{ row }">{{ fmt(row.startedAt || row.time) }}</template>
+          <template #default="{ row }">{{ formatTime(row.startedAt || row.time) }}</template>
         </el-table-column>
         <el-table-column label="触发" width="70">
           <template #default="{ row }">{{ row.trigger === "manual" ? "手动" : "定时" }}</template>
@@ -113,14 +113,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <el-pagination
-        v-model:current-page="logQuery.page"
-        v-model:page-size="logQuery.pageSize"
-        :total="logTotal"
-        layout="total, prev, pager, next"
-        style="margin-top: 12px; justify-content: flex-end"
-        @change="loadLogs"
-      />
+      <TablePager :query="logQuery" :total="logTotal" :load="loadLogs" layout="total, prev, pager, next" />
     </el-drawer>
   </div>
 </template>
@@ -130,7 +123,7 @@ import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { jobApi, type JobRow, type JobLogRow } from "@/api/system";
 import { useAuthStore } from "@/stores/auth";
-import { today } from "@/utils/datetime";
+import { formatTime, today } from "@/utils/datetime";
 
 const auth = useAuthStore();
 const rows = ref<JobRow[]>([]);
@@ -146,11 +139,9 @@ const logQuery = reactive({ page: 1, pageSize: 10, jobId: 0, date: today(), stat
 const emptyForm = { name: "", handlerKey: "", cronExpr: "0 * * * *", params: "", misfirePolicy: "SKIP", timeoutSec: 300, remark: "" };
 const form = reactive({ ...emptyForm });
 
-function fmt(v?: string | null) {
-  return v ? v.replace("T", " ").slice(0, 19) : "-";
-}
-function logTag(s: string) {
-  return { SUCCESS: "success", FAILED: "danger", TIMEOUT: "warning", SKIPPED_LOCK: "info" }[s] as any;
+/** 任务执行结果 → el-tag 颜色 */
+function logTag(s: string): "success" | "danger" | "warning" | "info" {
+  return ({ SUCCESS: "success", FAILED: "danger", TIMEOUT: "warning", SKIPPED_LOCK: "info" } as const)[s] ?? "info";
 }
 
 async function load() {

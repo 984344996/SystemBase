@@ -1,14 +1,14 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <el-input v-model="query.keyword" placeholder="用户名/姓名" clearable style="width: 200px" @keyup.enter="load" />
+      <el-input v-model="query.keyword" placeholder="用户名/姓名" clearable style="width: 200px" @keyup.enter="search" />
       <el-select v-model="query.status" placeholder="状态" clearable style="width: 120px">
         <el-option label="启用" value="ENABLED" />
         <el-option label="禁用" value="DISABLED" />
       </el-select>
-      <el-button type="primary" @click="load">查询</el-button>
+      <el-button type="primary" @click="search">查询</el-button>
       <div class="spacer" />
-      <el-button v-if="auth.hasPerm('system:user:create')" type="primary" plain @click="openCreate">新增用户</el-button>
+      <el-button v-permission="'system:user:create'" type="primary" plain @click="openCreate">新增用户</el-button>
     </div>
 
     <el-table :data="rows" border stripe>
@@ -22,33 +22,26 @@
       <el-table-column prop="phone" label="手机号" width="130" />
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'ENABLED' ? 'success' : 'danger'">{{ row.status === 'ENABLED' ? '启用' : '禁用' }}</el-tag>
+          <StatusTag :status="row.status" />
         </template>
       </el-table-column>
       <el-table-column prop="createdAt" label="创建时间" width="170">
-        <template #default="{ row }">{{ (row.createdAt || '').replace('T', ' ').slice(0, 19) }}</template>
+        <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="auth.hasPerm('system:user:update')" link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="auth.hasPerm('system:user:resetPwd')" link type="warning" @click="resetPwd(row)">重置密码</el-button>
+          <el-button v-permission="'system:user:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button v-permission="'system:user:resetPwd'" link type="warning" @click="resetPwd(row)">重置密码</el-button>
           <el-popconfirm title="确定删除该用户吗？" @confirm="remove(row)">
             <template #reference>
-              <el-button v-if="auth.hasPerm('system:user:delete')" link type="danger">删除</el-button>
+              <el-button v-permission="'system:user:delete'" link type="danger">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-pagination
-      v-model:current-page="query.page"
-      v-model:page-size="query.pageSize"
-      :total="total"
-      layout="total, prev, pager, next, sizes"
-      style="margin-top: 12px; justify-content: flex-end"
-      @change="load"
-    />
+    <TablePager :query="query" :total="total" :load="load" />
 
     <!-- 新增/编辑 -->
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑用户' : '新增用户'" width="480px">
@@ -87,24 +80,19 @@
 import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { userApi, roleApi, type UserRow } from "@/api/system";
-import { useAuthStore } from "@/stores/auth";
+import { usePagedList } from "@/composables/usePagedList";
+import { formatTime } from "@/utils/datetime";
 
-const auth = useAuthStore();
-const rows = ref<UserRow[]>([]);
-const total = ref(0);
-const query = reactive({ page: 1, pageSize: 10, keyword: "", status: "" });
+const { query, rows, total, load, search } = usePagedList(
+  { page: 1, pageSize: 10, keyword: "", status: "" },
+  (q) => userApi.list({ ...q, keyword: q.keyword || undefined, status: q.status || undefined }),
+);
 const dialogVisible = ref(false);
 const editingId = ref<number | null>(null);
 const allRoles = ref<{ id: number; code: string; name: string }[]>([]);
 
 const emptyForm = { username: "", password: "", name: "", phone: "", email: "", remark: "", status: "ENABLED", roleIds: [] as number[] };
 const form = reactive({ ...emptyForm });
-
-async function load() {
-  const res = await userApi.list({ ...query, keyword: query.keyword || undefined, status: query.status || undefined });
-  rows.value = res.list;
-  total.value = res.total;
-}
 
 function openCreate() {
   Object.assign(form, emptyForm);

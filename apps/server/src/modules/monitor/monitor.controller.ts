@@ -30,7 +30,7 @@ export class MonitorController {
   @RequirePermissions('system:log:download')
   @OperateLog({ module: '日志审计', action: '下载日志' })
   download(@Query() query: LogDateDto, @Res() res: Response) {
-    const path = this.monitor.downloadPath(query.date);
+    const path = this.monitor.downloadPath(query.date, query.source);
     res.download(path, basename(path));
   }
 

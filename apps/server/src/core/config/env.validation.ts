@@ -26,6 +26,20 @@ class EnvVariables {
   @IsString() @IsOptional() THROTTLE_LOGIN_LIMIT?: string;
   @Matches(/^\d+(b|kb|mb)$/i, { message: 'BODY_LIMIT 格式如 1mb / 512kb' }) @IsOptional() BODY_LIMIT?: string;
   @Matches(/^\d+$/, { message: 'PERMISSION_CACHE_TTL 为秒数，0 表示关闭缓存' }) @IsOptional() PERMISSION_CACHE_TTL?: string;
+  // API 文档开关：on / off（未配置时生产默认 off、其他环境 on）
+  @IsIn(['on', 'off', 'true', 'false', '1', '0']) @IsOptional() SWAGGER_ENABLED?: string;
+  // 指标端点开关：on / off（默认 off，需自行保证 /api/metrics 不对外暴露）
+  @IsIn(['on', 'off', 'true', 'false', '1', '0']) @IsOptional() METRICS_ENABLED?: string;
+  // ---- 安全加固（默认宽松：最小长度 8、不锁定、不过期、不要求验证码，避免升级后管理员被锁死）----
+  @Matches(/^\d+$/, { message: 'PASSWORD_MIN_LENGTH 需为正整数（默认 8）' }) @IsOptional() PASSWORD_MIN_LENGTH?: string;
+  @IsIn(['on', 'off']) @IsOptional() PASSWORD_COMPLEXITY?: string;
+  @Matches(/^\d+$/, { message: 'PASSWORD_EXPIRE_DAYS 需为整数天，0 表示不过期' }) @IsOptional() PASSWORD_EXPIRE_DAYS?: string;
+  @Matches(/^\d+$/, { message: 'LOGIN_FAIL_LOCK_COUNT 需为整数次，0 表示不锁定' }) @IsOptional() LOGIN_FAIL_LOCK_COUNT?: string;
+  @Matches(/^\d+$/, { message: 'LOGIN_FAIL_LOCK_MINUTES 需为整数分钟' }) @IsOptional() LOGIN_FAIL_LOCK_MINUTES?: string;
+  @Matches(/^\d+$/, { message: 'LOGIN_FAIL_WINDOW_MIN 需为整数分钟' }) @IsOptional() LOGIN_FAIL_WINDOW_MIN?: string;
+  @IsIn(['off', 'auto', 'on']) @IsOptional() LOGIN_CAPTCHA?: string;
+  @IsString() @IsOptional() IP_WHITELIST?: string;
+  @IsString() @IsOptional() IP_BLACKLIST?: string;
 }
 
 /**

@@ -26,6 +26,16 @@ body,
 .toolbar .spacer {
   flex: 1;
 }
+/* 弱化文字（提示/说明）与列表页分页条，多处复用，统一收口在这里 */
+.muted,
+.mini {
+  color: #8a97a8;
+  font-size: 12px;
+}
+.pager {
+  margin-top: 12px;
+  justify-content: flex-end;
+}
 
 /* 顶部加载进度条（utils/progress.ts） */
 .sb-progress {

@@ -1,4 +1,4 @@
-.PHONY: install dev build test lint db-deploy db-migrate db-push db-seed db-studio local local-fresh local-stop local-status pre release deploy deploy-status up up-redis down logs
+.PHONY: install dev build test lint db-deploy db-migrate db-push db-seed db-studio local local-fresh local-stop local-status pre release deploy deploy-status
 
 install:            ## 安装全部依赖
 	pnpm install
@@ -53,15 +53,3 @@ deploy:             ## 同 release（发布到正式环境）
 
 deploy-status:      ## 正式环境运行状态
 	bash ./sb.sh remote-release status
-
-up:                 ## docker compose 启动(mysql+server+web，默认 db 锁)
-	docker compose -f deploy/docker-compose.yml up -d --build
-
-up-redis:           ## docker compose 启动(含 redis，配合 LOCK_DRIVER=redis)
-	docker compose -f deploy/docker-compose.yml --profile redis up -d --build
-
-down:               ## 停止全部容器
-	docker compose -f deploy/docker-compose.yml down
-
-logs:               ## 跟随后端容器日志
-	docker compose -f deploy/docker-compose.yml logs -f server

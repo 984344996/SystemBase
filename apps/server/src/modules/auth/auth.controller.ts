@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, Put, Req } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { Public } from '../../core/security/public.decorator';
@@ -11,6 +12,7 @@ import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
+@ApiTags('认证')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
@@ -25,6 +27,14 @@ export class AuthController {
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
     return this.auth.login(dto, req);
+  }
+
+  /** 登录验证码（LOGIN_CAPTCHA=off 或未安装 svg-captcha 时返回 null） */
+  @Public()
+  @Get('captcha')
+  @ApiOperation({ summary: '获取登录验证码（一次性，5 分钟有效）' })
+  captcha() {
+    return this.auth.captcha();
   }
 
   /** 刷新 accessToken（refreshToken 轮换） */

@@ -17,5 +17,3 @@ export const permission: Directive<HTMLElement, string | string[]> = {
     if (!useAuthStore().hasAnyPerm(codes)) el.remove();
   },
 };
-
-export default permission;

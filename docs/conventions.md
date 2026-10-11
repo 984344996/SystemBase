@@ -35,7 +35,7 @@ docs: 文档          chore: 构建/工具    perf: 性能
 - 禁止在 core/ 引用 modules/（分层铁律，见 architecture.md）
 - 日志输出一律结构化字段在前、消息在后：`logger.info({ userId }, '用户登录')`
 - 敏感信息（密码/token/密钥）禁止写日志（redact 已兜底，业务代码也不要手动打印）
-- 时间一律 ISO 8601 / Date；时区统一服务器本地（容器 TZ=Asia/Shanghai）
+- 时间一律 ISO 8601 / Date；时区统一服务器本地（服务器 TZ=Asia/Shanghai）
 
 ## 版本
 

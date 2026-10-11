@@ -57,7 +57,17 @@ case "$MODE" in
     echo "==> [1/3] 监听 0.0.0.0（$MYCNF）"
     set_bind 0.0.0.0
     echo "==> [2/3] 创建远程账号 '$DB_USER'@'$ALLOW_IP'（仅 $DB_NAME.* 权限）"
+    # MySQL 8 密码策略可能拒绝 env 中的应用密码：建账号期间临时放宽为 LOW，完成后恢复
+    PW_POLICY="$(mysql "${MYSQL_ADMIN[@]}" -N -e "SHOW VARIABLES LIKE 'validate_password%'" 2>/dev/null | awk '$1 ~ /policy$/ {print $NF}' | head -n 1)"
+    if [ -n "$PW_POLICY" ] && [ "$PW_POLICY" != "LOW" ]; then
+      mysql "${MYSQL_ADMIN[@]}" -e "SET GLOBAL validate_password.policy=LOW" 2>/dev/null \
+        || mysql "${MYSQL_ADMIN[@]}" -e "SET GLOBAL validate_password_policy=LOW" 2>/dev/null || true
+    fi
     mysql "${MYSQL_ADMIN[@]}" -e "CREATE USER IF NOT EXISTS '$DB_USER'@'$ALLOW_IP' IDENTIFIED BY '$SQL_PASS'; ALTER USER '$DB_USER'@'$ALLOW_IP' IDENTIFIED BY '$SQL_PASS'; GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'$ALLOW_IP'; FLUSH PRIVILEGES;"
+    if [ -n "$PW_POLICY" ] && [ "$PW_POLICY" != "LOW" ]; then
+      mysql "${MYSQL_ADMIN[@]}" -e "SET GLOBAL validate_password.policy=$PW_POLICY" 2>/dev/null \
+        || mysql "${MYSQL_ADMIN[@]}" -e "SET GLOBAL validate_password_policy=$PW_POLICY" 2>/dev/null || true
+    fi
     echo "==> [3/3] 重启 MySQL（$SVC）"
     restart_mysql
     IP="$(curl -s --max-time 3 ifconfig.me || hostname -I | awk '{print $1}')"

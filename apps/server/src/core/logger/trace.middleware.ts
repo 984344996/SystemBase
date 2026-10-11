@@ -3,7 +3,7 @@ import { NextFunction, Request, Response } from 'express';
 import { AppLogger } from './logger.service';
 import { runWithTraceId } from './trace.context';
 
-/** 探活等高频无业务意义的路径不记访问日志（docker healthcheck 每 15s 一次，一天 5760 行噪音） */
+/** 探活等高频无业务意义的路径不记访问日志（探活通常 15s 一次，一天 5760 行噪音） */
 const SKIP_ACCESS_LOG = ['/api/health'];
 
 /**

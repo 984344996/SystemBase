@@ -12,10 +12,8 @@ systembase/
 ├── packages/
 │   └── shared/        # 前后端共享工具(时间区间算法、通用常量)
 ├── deploy/
-│   ├── envs/          # 环境配置：local.env / remote-pre.env / remote-release.env（example 已提交）
-│   ├── server/        # 服务器部署：初始化 / 发布 / 运维 / SSL 脚本，PM2 与 Nginx 模板
-│   ├── docker/        # Dockerfile
-│   └── nginx/         # Docker 版 nginx 配置
+│   ├── envs/          # 环境配置：local.env + remote-<名字>.env；模板 remote.env.example / local.env.example 已提交
+│   └── server/        # 服务器部署：初始化 / 发布 / 运维 / SSL 脚本，PM2 与 Nginx 模板
 ├── docs/              # 架构、模块开发、定时任务、部署文档
 ├── sb.sh / sb.ps1     # 统一入口：./sb.sh local start | remote-pre deploy | remote-release ...
 ├── start-local.sh / start-local.ps1   # 本地启动实现（由 sb 分发，也可直接执行）
@@ -30,7 +28,7 @@ systembase/
 |---|---|---|
 | Node.js | ≥ 20.10 | |
 | pnpm | 9.x | 已在根 `package.json` 用 `packageManager` 锁定，执行 `corepack enable` 后自动使用正确版本 |
-| MySQL | 8.x | 本地开发直连；Docker 部署则无需本机安装 |
+| MySQL | 8.x | 本地开发直连；服务器部署 `init` 可自动安装 |
 
 ## 5 分钟跑起来
 
@@ -55,9 +53,11 @@ cp deploy/envs/local.env.example deploy/envs/local.env # 确认 DATABASE_URL 指
 | `remote-pre` | `deploy/envs/remote-pre.env` | SSH 地址/端口/用户/密码、部署目录、PM2 应用名 + 应用全套运行配置 |
 | `remote-release` | `deploy/envs/remote-release.env` | 同上（指向正式服务器） |
 
+所有远程环境共用一份模板 `deploy/envs/remote.env.example`，**新增环境复制同一份**即可（环境名只能小写字母、数字、连字符，脚本按文件名自动识别）：
+
 ```bash
-cp deploy/envs/remote-pre.env.example deploy/envs/remote-pre.env         # 填 SSH_HOST 与应用配置
-cp deploy/envs/remote-release.env.example deploy/envs/remote-release.env
+cp deploy/envs/remote.env.example deploy/envs/remote-<名字>.env         # 填 SSH_HOST 与应用配置
+# 例：cp deploy/envs/remote.env.example deploy/envs/remote-pre.env
 ssh-copy-id root@服务器IP              # SSH 免密（推荐）；或在 env 里填 SSH_PASSWORD（Mac/Linux 需 sshpass）
 ./sb.sh remote-pre init                # 首次：初始化预发布服务器并发布
 ./sb.sh remote-pre deploy              # 日常发布预发布（失败自动回滚）
@@ -76,8 +76,12 @@ ssh-copy-id root@服务器IP              # SSH 免密（推荐）；或在 env 
 | 动态定时任务 | cron 存 DB、代码注册 handler，管理页增删改即时生效，支持分布式锁 |
 | 日志 | **只落文件不落库**：每天一个 `app.YYYY-MM-DD.log`，`level` 区分 INFO/WARN/ERROR，`category` 区分 app/access/audit/job，traceId 全链路，敏感字段脱敏，按 `LOG_KEEP_DAYS` 自动清理 |
 | 统一规范 | 统一响应 `{code,data,message,traceId}`、全局异常、DTO 强校验、分页基座、Prisma Migrate 迁移 |
-| 安全 | helmet 安全头、请求体大小限制、登录限流、refreshToken 重放检测、容器非 root 运行 |
-| 性能 | 登录用户权限缓存（变更即时失效），访问日志跳过探活 |
+| 安全 | helmet 安全头、请求体大小限制、登录限流、refreshToken 重放检测 |
+| 性能 | 登录用户权限缓存（变更即时失效；`LOCK_DRIVER=redis` 时多实例通过 pub/sub 广播失效），访问日志跳过探活 |
+| 可观测 | `/api/health`（综合）、`/api/health/live`（存活）、`/api/health/ready`（就绪：DB/Redis/日志目录）、`/api/metrics`（Prometheus 文本，开关控制）、日志告警任务 `system.logAlert` |
+| 通用模块 | 系统参数（运行时可改、无需重启）、数据字典、文件管理（类型/大小白名单 + 鉴权下载）、通知公告（置顶/有效期/已读） |
+| 安全 | 密码策略（长度/复杂度/弱密码字典/含用户名/过期）、强制改密、失败锁定、登录验证码（可选）、IP 白黑名单 |
+| 效率工具 | Swagger API 文档（`/api/docs`）、CRUD 代码生成器（`./sb.sh gen-crud <模块>`）、数据库备份/恢复（`db-backup`/`db-restore`）、环境体检（`doctor`）、pre-commit 卡口 |
 | 可选 Redis | `LOCK_DRIVER=redis|db`，未装 Redis 时自动降级数据库锁 |
 | 审计 | 登录（含失败原因）、写操作（`@OperateLog`，成功/失败）、任务执行均写入日志文件；管理端「系统日志 / 登录日志 / 操作日志」按天检索、可下载原文件 |
 | 前端 | 菜单→动态路由、路由级权限 + 403 页、按钮 `v-permission`；错误提示分级且带追踪码；路由加载进度条；发版后旧 chunk 自动刷新 |
@@ -88,4 +92,6 @@ ssh-copy-id root@服务器IP              # SSH 免密（推荐）；或在 env 
 - [业务模块开发指南](docs/module-guide.md)
 - [定时任务指南](docs/job-guide.md)
 - [部署指南](docs/deploy.md)
+- [本地与远程发布流程（脚本调用链）](docs/flow.md)
+- [存储路径速查（本地/远程：日志、数据库、网站、服务器）](docs/paths.md)
 - [约定](docs/conventions.md)

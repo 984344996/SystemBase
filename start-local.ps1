@@ -8,6 +8,9 @@
 #   powershell -ExecutionPolicy Bypass -File start-local.ps1 stop      停止前后端
 #   powershell -ExecutionPolicy Bypass -File start-local.ps1 status    查看运行状态
 #   powershell -ExecutionPolicy Bypass -File start-local.ps1 logs      跟踪前后端开发进程输出
+#   powershell -ExecutionPolicy Bypass -File start-local.ps1 db-backup 备份本地数据库到 backup\local\
+#   powershell -ExecutionPolicy Bypass -File start-local.ps1 db-restore 文件  恢复本地库（需输入库名确认）
+#   powershell -ExecutionPolicy Bypass -File start-local.ps1 db-list   列出本地备份
 #
 # 说明:
 #   - 唯一配置源是 deploy\envs\local.env（端口/数据库等，含 WEB_PORT 前端端口）
@@ -16,7 +19,10 @@
 #   - 表结构统一走 prisma migrate（与生产一致），首次运行自动创建数据库；不依赖 mysql.exe
 #   - 应用日志写 apps/server/logs/app.YYYY-MM-DD.log；进程输出写 .run/server.log、.run/web.log
 # ============================================================
-param([Parameter(Position = 0)][string]$Command = "restart")
+param(
+  [Parameter(Position = 0)][string]$Command = "restart",
+  [Parameter(Position = 1)][string]$Arg1 = ""
+)
 $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
@@ -63,7 +69,8 @@ if (Test-Path $localEnv) {
 }
 $dbInfo = @(& node $envTool db $envFile)
 if ($LASTEXITCODE -ne 0) { exit 1 }
-$dbHost = $dbInfo[0]; $dbPort = $dbInfo[1]; $dbName = $dbInfo[4]
+$dbHost = $dbInfo[0]; $dbPort = $dbInfo[1]; $dbUser = $dbInfo[2]; $dbPass = $dbInfo[3]; $dbName = $dbInfo[4]
+$backupDir = Join-Path $root "backup\local"
 if ($dbHost -notin @("localhost", "127.0.0.1")) { Fail "DATABASE_URL 指向 $dbHost，本地脚本只操作本机数据库" }
 $serverPort = [int](& node $envTool get $envFile PORT 3000 | Select-Object -First 1)
 $webPort = if ($env:SB_WEB_PORT) { [int]$env:SB_WEB_PORT } else { [int](& node $envTool get $envFile WEB_PORT 5173 | Select-Object -First 1) }
@@ -259,7 +266,81 @@ function Start-All([string]$mode) {
   Show-Summary
 }
 
+# ---------- 数据库备份 / 恢复（Windows 无 gzip，备份为 .sql） ----------
+function Get-BackupName([string]$note = "") {
+  $name = "${dbName}_$(Get-Date -Format 'yyyyMMddHHmmss')"
+  if ($note) { $name = "${name}_$note" }
+  return $name
+}
+
+# ★ MySQL 8 默认开启 GTID：默认导出的 dump 含 SET @@GLOBAL.GTID_PURGED，恢复时报 ERROR 3546
+function Get-GtidDumpOpt {
+  $mode = [string](& mysql -h $dbHost -P $dbPort -u $dbUser -N -e "SELECT @@gtid_mode" 2>$null | Select-Object -First 1)
+  if ($mode -match '^(ON|ON_PERMISSIVE)$') { return "--set-gtid-purged=OFF" }
+  return ""
+}
+
+function Invoke-DbBackup([string]$note = "") {
+  if (-not (Get-Command mysqldump -ErrorAction SilentlyContinue)) { Fail "未找到 mysqldump（请安装 MySQL 客户端并加入 PATH）" }
+  if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null }
+  $out = Join-Path $backupDir "$(Get-BackupName $note).sql"
+  # --no-tablespaces：MySQL 8 的 mysqldump 默认读 tablespace 信息（需 PROCESS 权限），非 root 账号会失败
+  $gtidOpt = Get-GtidDumpOpt
+  # 用 cmd /c 重定向：PowerShell 5.1 重定向默认 UTF-16，会导致备份文件损坏
+  $env:MYSQL_PWD = $dbPass
+  & cmd /c "mysqldump -h $dbHost -P $dbPort -u $dbUser --default-character-set=utf8mb4 $gtidOpt --no-tablespaces --single-transaction --quick --routines --triggers $dbName > `"$out`""
+  $code = $LASTEXITCODE
+  $env:MYSQL_PWD = ""
+  if ($code -ne 0 -or -not (Test-Path $out)) { Remove-Item $out -Force -ErrorAction SilentlyContinue; Fail "备份失败（确认 MySQL 已启动、账号有 SELECT 权限）" }
+  Write-Step "备份完成: backup\local\$(Split-Path $out -Leaf)（$([math]::Round((Get-Item $out).Length / 1KB, 1)) KB）"
+  # 清理过期备份
+  $keep = if ($env:KEEP_BACKUP_DAYS) { [int]$env:KEEP_BACKUP_DAYS } else { 7 }
+  Get-ChildItem $backupDir -Filter "*.sql" -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$keep) } | ForEach-Object { Remove-Item $_.FullName -Force }
+}
+
+function Invoke-DbRestore([string]$src) {
+  if (-not $src) { Fail "用法: .\sb.ps1 local db-restore backup\local\xxx.sql" }
+  if (-not (Get-Command mysql -ErrorAction SilentlyContinue)) { Fail "未找到 mysql 客户端（无法恢复）" }
+  if (-not (Test-Path $src)) {
+    $candidate = Join-Path $backupDir $src
+    if (Test-Path $candidate) { $src = $candidate } else { Fail "备份文件不存在: $src（.\sb.ps1 local db-list 查看）" }
+  }
+  Write-Host "将用 $src 覆盖本地数据库 $dbName 的全部数据" -ForegroundColor Red
+  $confirm = Read-Host "请输入数据库名 $dbName 确认"
+  if ($confirm -ne $dbName) { Write-Host "已取消"; return }
+  if (Get-Command mysqldump -ErrorAction SilentlyContinue) { Write-Step "恢复前先备份当前库..."; Invoke-DbBackup "auto-before-restore" }
+  # 兼容历史备份：剔除 GTID 语句（否则恢复报 ERROR 3546），写到临时文件再导入
+  $gtidPat = '^SET @@(GLOBAL\.GTID_PURGED|SESSION\.SQL_LOG_BIN|SESSION\.GTID_NEXT)'
+  $tmp = Join-Path $env:TEMP "sb-restore-$([guid]::NewGuid().ToString('N')).sql"
+  $lines = @(Get-Content $src -Encoding UTF8 | Where-Object { $_ -notmatch $gtidPat })
+  [IO.File]::WriteAllLines($tmp, $lines, (New-Object Text.UTF8Encoding($false)))
+  $env:MYSQL_PWD = $dbPass
+  & cmd /c "mysql -h $dbHost -P $dbPort -u $dbUser --default-character-set=utf8mb4 $dbName < `"$tmp`""
+  Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+  $code = $LASTEXITCODE
+  $env:MYSQL_PWD = ""
+  if ($code -ne 0) { Fail "恢复失败（退出码 $code）" }
+  Write-Step "恢复完成"
+}
+
+function Show-BackupList {
+  if (-not (Test-Path $backupDir)) { Write-Host "还没有备份"; return }
+  Write-Host "本地备份（$backupDir）："
+  Get-ChildItem $backupDir -Filter "*.sql" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime |
+    ForEach-Object { Write-Host ("  {0} KB`t{1}" -f [math]::Round($_.Length / 1KB, 1), $_.Name) }
+  if (-not (Get-ChildItem $backupDir -Filter "*.sql" -File -ErrorAction SilentlyContinue)) { Write-Host "  （空）" }
+}
+
 # ---------- 命令分发 ----------
+# 每个命令实际会做什么：
+#   start / restart(默认)  装依赖 → 停旧进程 → 检查端口 → prisma migrate deploy(库不存在自动建)
+#                          → seed 幂等补齐数据 → 后台启动后端+前端 → 等待健康检查
+#   fresh                  prisma migrate reset 清空本地库 → 再走一遍 start（需输入 yes）
+#   stop                   结束后端与前端（只结束命令行含本项目路径的进程）
+#   status                 显示 后端/前端/MySQL 运行状态 + 健康检查
+#   logs                   跟踪 .run\server.log（后端 watch 输出）
+#   db-backup / db-restore / db-list   本地库备份/恢复/列表
 switch ($Command.ToLower()) {
   { $_ -in @("restart", "start") } { Start-All "restart" }
   "fresh" {
@@ -270,6 +351,9 @@ switch ($Command.ToLower()) {
   }
   "stop" { Stop-Services }
   "status" { Show-Status }
+  "db-backup" { Invoke-DbBackup $Arg1 }
+  "db-restore" { Invoke-DbRestore $Arg1 }
+  "db-list" { Show-BackupList }
   "logs" {
     if (-not (Test-Path $serverLog)) { Fail "尚未启动过（.run\server.log 不存在）" }
     Write-Host "跟踪后端输出（Ctrl+C 退出；前端输出见 .run\web.log）" -ForegroundColor Cyan
@@ -277,7 +361,7 @@ switch ($Command.ToLower()) {
   }
   default {
     Write-Host "未知命令: $Command"
-    Write-Host "可用: restart(默认) / fresh / start / stop / status / logs"
+    Write-Host "可用: restart(默认) / fresh / start / stop / status / logs / db-backup / db-restore / db-list"
     exit 1
   }
 }

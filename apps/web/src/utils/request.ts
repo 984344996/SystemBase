@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { ElMessage } from "element-plus";
+import { setLastTraceId } from "./clientLog";
 
 export const TOKEN_KEY = "sb_access_token";
 export const REFRESH_TOKEN_KEY = "sb_refresh_token";
@@ -73,8 +74,9 @@ async function readErrorBody(data: unknown): Promise<{ message?: string; traceId
 }
 
 // ---------------- axios 实例 ----------------
+// baseURL 跟随 vite base（根路径部署 = "/api"；子路径部署如 /systembase-pre = "/systembase-pre/api"）
 const service = axios.create({
-  baseURL: "/api",
+  baseURL: `${import.meta.env.BASE_URL}api`,
   timeout: 20000,
 });
 
@@ -93,7 +95,7 @@ async function doRefresh(): Promise<string | null> {
   if (!refreshToken) return null;
   try {
     // 用裸 axios，避免经过本拦截器形成循环
-    const { data } = await axios.post("/api/auth/refresh", { refreshToken });
+    const { data } = await axios.post(`${import.meta.env.BASE_URL}api/auth/refresh`, { refreshToken });
     const payload = data?.data || {};
     if (!payload.accessToken) return null;
     localStorage.setItem(TOKEN_KEY, payload.accessToken);
@@ -110,6 +112,9 @@ interface RetriableConfig extends InternalAxiosRequestConfig {
 
 service.interceptors.response.use(
   (response) => {
+    // 记住最近一次请求的 traceId：前端报错上报时带上，后端日志里 grep 同一个 ID 即可串起整条链路
+    const tid = response.headers?.["x-trace-id"] as string | undefined;
+    if (tid) setLastTraceId(tid);
     const body = response.data;
     // 统一响应结构：{ code, data, message, traceId }
     if (body && typeof body === "object" && !(body instanceof Blob) && "code" in body) {
@@ -139,9 +144,10 @@ service.interceptors.response.use(
         return service(config);
       }
       clearAuth();
-      if (!window.location.pathname.startsWith("/login")) {
+      // 子路径部署时这里是 /systembase-pre/login，不能硬编码 "/login"
+      if (!window.location.pathname.startsWith(`${import.meta.env.BASE_URL}login`)) {
         notify("warning", "登录已过期，请重新登录");
-        window.location.href = "/login";
+        window.location.href = `${import.meta.env.BASE_URL}login`;
       }
       return Promise.reject(error);
     }

@@ -115,7 +115,7 @@ const result = await paginate(this.prisma, this.prisma.booking, {
 ```bash
 # 改 prisma/schema.prisma 后：生成迁移并应用到本地库，迁移文件随代码提交
 make db-migrate name=add_booking
-# 生产环境由容器启动时 prisma migrate deploy 自动执行，无需手工操作
+# 生产环境由部署脚本 prisma migrate deploy 自动执行，无需手工操作
 ```
 
 > 新增菜单/权限点写进 `src/database/seed.ts`（幂等），部署后执行一次 seed 即可。

@@ -34,7 +34,7 @@
         <el-descriptions-item label="定时任务">cron 存数据库，管理页动态增删改，即时生效</el-descriptions-item>
         <el-descriptions-item label="日志">只落文件、每天一份，INFO / WARN / ERROR 分级，traceId 串联全链路</el-descriptions-item>
         <el-descriptions-item label="审计">登录与操作审计写入日志文件（敏感字段脱敏），管理页按天检索、可下载原文件</el-descriptions-item>
-        <el-descriptions-item label="部署">Docker Compose 一键起（mysql + redis + server + web）</el-descriptions-item>
+        <el-descriptions-item label="部署">三环境一键脚本：本地启动 / 服务器发布（PM2 + Nginx，秒级回滚）</el-descriptions-item>
       </el-descriptions>
     </div>
   </div>
@@ -50,7 +50,7 @@ const healthy = ref(false);
 
 onMounted(async () => {
   try {
-    const { data } = await axios.get("/api/health");
+    const { data } = await axios.get(`${import.meta.env.BASE_URL}api/health`);
     healthy.value = data?.data?.status === "ok" || data?.status === "ok";
   } catch {
     healthy.value = false;

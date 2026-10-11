@@ -1,10 +1,10 @@
 <template>
   <div class="page-card">
     <div class="toolbar">
-      <el-input v-model="query.keyword" placeholder="角色编码/名称" clearable style="width: 200px" @keyup.enter="load" />
-      <el-button type="primary" @click="load">查询</el-button>
+      <el-input v-model="query.keyword" placeholder="角色编码/名称" clearable style="width: 200px" @keyup.enter="search" />
+      <el-button type="primary" @click="search">查询</el-button>
       <div class="spacer" />
-      <el-button v-if="auth.hasPerm('system:role:create')" type="primary" plain @click="openCreate">新增角色</el-button>
+      <el-button v-permission="'system:role:create'" type="primary" plain @click="openCreate">新增角色</el-button>
     </div>
 
     <el-table :data="rows" border stripe>
@@ -15,30 +15,23 @@
       </el-table-column>
       <el-table-column label="状态" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'ENABLED' ? 'success' : 'danger'">{{ row.status === 'ENABLED' ? '启用' : '禁用' }}</el-tag>
+          <StatusTag :status="row.status" />
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" />
       <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="auth.hasPerm('system:role:update')" link type="primary" @click="openEdit(row)">编辑权限</el-button>
+          <el-button v-permission="'system:role:update'" link type="primary" @click="openEdit(row)">编辑权限</el-button>
           <el-popconfirm title="确定删除该角色吗？" @confirm="remove(row)">
             <template #reference>
-              <el-button v-if="auth.hasPerm('system:role:delete')" link type="danger">删除</el-button>
+              <el-button v-permission="'system:role:delete'" link type="danger">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>
 
-    <el-pagination
-      v-model:current-page="query.page"
-      v-model:page-size="query.pageSize"
-      :total="total"
-      layout="total, prev, pager, next"
-      style="margin-top: 12px; justify-content: flex-end"
-      @change="load"
-    />
+    <TablePager :query="query" :total="total" :load="load" />
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑角色' : '新增角色'" width="520px">
       <el-form label-width="80px">
@@ -79,12 +72,12 @@ import { ElMessage } from "element-plus";
 import type { ElTree } from "element-plus";
 import { roleApi, type RoleRow } from "@/api/system";
 import type { MenuNode } from "@/api/auth";
-import { useAuthStore } from "@/stores/auth";
+import { usePagedList } from "@/composables/usePagedList";
 
-const auth = useAuthStore();
-const rows = ref<RoleRow[]>([]);
-const total = ref(0);
-const query = reactive({ page: 1, pageSize: 10, keyword: "" });
+const { query, rows, total, load, search } = usePagedList(
+  { page: 1, pageSize: 10, keyword: "" },
+  (q) => roleApi.list({ ...q, keyword: q.keyword || undefined }),
+);
 const dialogVisible = ref(false);
 const editingId = ref<number | null>(null);
 const menuTree = ref<MenuNode[]>([]);
@@ -92,12 +85,6 @@ const menuTreeRef = ref<InstanceType<typeof ElTree>>();
 
 const emptyForm = { code: "", name: "", status: "ENABLED", remark: "", menuIds: [] as number[] };
 const form = reactive({ ...emptyForm });
-
-async function load() {
-  const res = await roleApi.list({ ...query, keyword: query.keyword || undefined });
-  rows.value = res.list;
-  total.value = res.total;
-}
 
 function checkedKeys(): number[] {
   const tree = menuTreeRef.value;
@@ -143,7 +130,8 @@ async function submit() {
     await roleApi.update(editingId.value, { name: form.name, status: form.status, remark: form.remark, menuIds });
   } else {
     if (!form.code || !form.name) return ElMessage.warning("请填写角色编码与名称");
-    await roleApi.create({ ...form, menuIds });
+    // 创建不传 status（CreateRoleDto 白名单校验会拒绝），后端默认 ENABLED
+    await roleApi.create({ code: form.code, name: form.name, remark: form.remark, menuIds });
   }
   ElMessage.success("保存成功");
   dialogVisible.value = false;

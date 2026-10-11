@@ -78,8 +78,9 @@ const form = reactive({ ...emptyForm });
 function typeName(t: string) {
   return { DIRECTORY: "目录", MENU: "页面", BUTTON: "按钮" }[t] || t;
 }
-function typeTag(t: string) {
-  return ({ DIRECTORY: "warning", MENU: "primary", BUTTON: "info" }[t] || "info") as any;
+/** 菜单类型 → el-tag 颜色 */
+function typeTag(t: string): "warning" | "primary" | "info" {
+  return ({ DIRECTORY: "warning", MENU: "primary", BUTTON: "info" } as const)[t] ?? "info";
 }
 
 async function load() {

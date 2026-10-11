@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
 import { createHash } from 'node:crypto';
 import { AuthService } from './auth.service';
+import { LoginGuardService } from '../../core/security/login-guard.service';
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 const req = { ip: '10.0.0.8', headers: { 'user-agent': 'jest' } } as any;
@@ -14,19 +15,24 @@ function setup() {
     refreshToken: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
   };
   const jwt = { signAsync: jest.fn().mockResolvedValue('access-token') };
-  const logger = { audit: jest.fn() };
+  const logger = { audit: jest.fn(), warn: jest.fn() };
   const permCache = { invalidateUser: jest.fn() };
+  const guard = new LoginGuardService(new ConfigService({}), logger as any);
   const service = new AuthService(
     prisma as any,
     jwt as any,
     new ConfigService({ JWT_REFRESH_EXPIRES_IN: '7d' }),
     logger as any,
     permCache as any,
+    guard,
   );
-  return { service, prisma, jwt, logger, permCache };
+  return { service, prisma, jwt, logger, permCache, guard };
 }
 
-const activeUser = { id: 1, username: 'admin', name: '管理员', password: PASSWORD_HASH, status: 'ENABLED', deletedAt: null };
+const activeUser = {
+  id: 1, username: 'admin', name: '管理员', password: PASSWORD_HASH,
+  status: 'ENABLED', deletedAt: null, mustChangePassword: false, pwdUpdatedAt: new Date(),
+};
 
 describe('AuthService.login', () => {
   it('成功：签发 token，并写 INFO 级登录审计', async () => {

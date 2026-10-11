@@ -34,6 +34,27 @@ reload_pm2() {
   pm2 save >/dev/null 2>&1 || true
 }
 svc_state() { systemctl is-active "$1" 2>/dev/null || echo "inactive"; }
+
+# ---------- 站点级启停（同一台机器部署多个环境时不能停整机 Nginx） ----------
+# 只摘掉/挂回「本环境」的站点配置，然后 reload；另一环境的站点与 Nginx 进程不受影响
+site_path() {
+  if [ -d /etc/nginx/sites-available ]; then echo "/etc/nginx/sites-enabled/$APP_NAME"; else echo "/etc/nginx/conf.d/$APP_NAME.conf"; fi
+}
+site_disable() {
+  local f; f="$(site_path)"
+  [ -e "$f" ] || return 0
+  if [ -d /etc/nginx/sites-available ]; then rm -f "$f"; else mv -f "$f" "$f.disabled"; fi
+  systemctl reload nginx 2>/dev/null || true
+}
+site_enable() {
+  if [ -d /etc/nginx/sites-available ]; then
+    [ -f "/etc/nginx/sites-available/$APP_NAME" ] && ln -sf "/etc/nginx/sites-available/$APP_NAME" "/etc/nginx/sites-enabled/$APP_NAME"
+  else
+    [ -f "/etc/nginx/conf.d/$APP_NAME.conf.disabled" ] && mv -f "/etc/nginx/conf.d/$APP_NAME.conf.disabled" "/etc/nginx/conf.d/$APP_NAME.conf"
+  fi
+  systemctl start nginx >/dev/null 2>&1 || true
+  systemctl reload nginx >/dev/null 2>&1 || true
+}
 mysql_state() {
   local s
   for s in mysqld mysql; do systemctl cat "$s" >/dev/null 2>&1 && { svc_state "$s"; return; }; done
@@ -81,6 +102,7 @@ case "$CMD" in
     [ -f "$APP_DIR/releases.log" ] && { echo "最近发布记录："; tail -n 5 "$APP_DIR/releases.log" | sed 's/^/    /'; }
     ;;
 
+  # ★ 回滚：把 current 软链切回指定/上一版本并重启；【只换代码，不回退数据库】
   rollback)
     cur="$(current_stamp)"
     if [ -n "$ARG1" ]; then
@@ -101,8 +123,11 @@ case "$CMD" in
     echo -e "${R}!! 回滚后健康检查未通过，请执行 ./deploy.sh logs pm2 排查${N}"; exit 1
     ;;
 
+  # ★ 启动：PM2 拉起应用 + 启动 Nginx
   restart) reload_pm2; echo "后端已重启" ;;
-  start)   systemctl start nginx; reload_pm2; echo "后端与 Nginx 已启动" ;;
-  stop)    pm2 stop "$PM2_NAME" >/dev/null; systemctl stop nginx; echo "后端与 Nginx 已停止（页面不可访问）" ;;
+  # ★ 启停只作用于本环境：摘/挂本环境站点配置 + PM2 应用启停。
+  #   不用 systemctl stop nginx —— 同一台机器部署多个环境时会把其他环境一起停掉
+  start)   site_enable; reload_pm2; echo "本环境已启动（$APP_NAME）" ;;
+  stop)    pm2 stop "$PM2_NAME" >/dev/null; site_disable; echo "本环境已停止（$APP_NAME，页面不可访问；同机其他环境不受影响）" ;;
   *) echo "未知命令: $CMD（status / logs / releases / rollback / restart / start / stop）"; exit 1 ;;
 esac

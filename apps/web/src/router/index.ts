@@ -16,6 +16,8 @@ declare module "vue-router" {
 
 const routes: RouteRecordRaw[] = [
   { path: "/login", name: "login", component: () => import("@/views/login/Login.vue"), meta: { public: true, title: "登录" } },
+  // 强制改密：登录态下可访问，登录成功且 mustChangePassword 时由守卫拦截到此页
+  { path: "/change-password", name: "change-password", component: () => import("@/views/profile/ForceChangePwd.vue"), meta: { title: "修改密码" } },
   { path: "/404", name: "not-found", component: () => import("@/views/error/NotFound.vue"), meta: { public: true, title: "页面不存在" } },
   { path: "/403", name: "forbidden", component: () => import("@/views/error/Forbidden.vue"), meta: { public: true, title: "无权限" } },
   {
@@ -31,8 +33,10 @@ const routes: RouteRecordRaw[] = [
   },
 ];
 
+// ★ base 必须显式传入：createWebHistory() 不传时默认取站点根路径 "/"，子路径部署
+//   （vite base = /systembase-pre/，如 https://域名/systembase-pre/）下跳转会跳出子路径
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 });
 
@@ -61,6 +65,11 @@ router.beforeEach(async (to) => {
     }
   }
 
+  // 管理员重置过密码：登录成功但还没改密 → 只允许改密页（登出也有出口）
+  if (auth.mustChangePassword && to.path !== "/change-password") {
+    return { path: "/change-password", replace: true };
+  }
+
   // 路由级权限：页面声明了 meta.permission 且当前用户不具备 → 403
   const perm = to.meta.permission;
   if (perm && !auth.hasAnyPerm(Array.isArray(perm) ? perm : [perm])) {
@@ -86,7 +95,8 @@ router.onError((err, to) => {
   const key = "sb_chunk_reload";
   if (chunkFailed && sessionStorage.getItem(key) !== to.fullPath) {
     sessionStorage.setItem(key, to.fullPath);
-    window.location.assign(to.fullPath);
+    // to.fullPath 不含 base，子路径部署时要自己拼上（BASE_URL 带尾斜杠）
+    window.location.assign(`${import.meta.env.BASE_URL}${to.fullPath.replace(/^\//, "")}`);
   }
 });
 

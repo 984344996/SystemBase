@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { JwtStrategy } from './jwt.strategy';
 import { PermissionCacheService } from './permission-cache.service';
+import { LoginGuardService } from './login-guard.service';
 
 @Global()
 @Module({
@@ -17,7 +18,7 @@ import { PermissionCacheService } from './permission-cache.service';
       }),
     }),
   ],
-  providers: [JwtStrategy, PermissionCacheService],
-  exports: [JwtModule, JwtStrategy, PermissionCacheService],
+  providers: [JwtStrategy, PermissionCacheService, LoginGuardService],
+  exports: [JwtModule, JwtStrategy, PermissionCacheService, LoginGuardService],
 })
 export class SecurityModule {}

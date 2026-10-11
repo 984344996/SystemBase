@@ -40,14 +40,7 @@
       </el-table-column>
     </el-table>
 
-    <el-pagination
-      v-model:current-page="query.page"
-      v-model:page-size="query.pageSize"
-      :total="Math.min(total, 5000)"
-      layout="total, prev, pager, next, sizes"
-      style="margin-top: 12px; justify-content: flex-end"
-      @change="load"
-    />
+    <TablePager :query="query" :total="Math.min(total, 5000)" :load="load" />
   </div>
 </template>
 
@@ -88,9 +81,3 @@ function search() {
 onMounted(load);
 </script>
 
-<style scoped>
-.muted {
-  color: #8a97a8;
-  font-size: 12px;
-}
-</style>

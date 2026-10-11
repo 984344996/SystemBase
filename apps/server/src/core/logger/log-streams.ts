@@ -8,7 +8,10 @@ import pino from 'pino';
  * 用 level / category 字段区分，grep 或管理页按字段过滤即可。
  */
 export const LOG_FILE_PREFIX = 'app';
+/** 前端（浏览器）日志独立文件：与后端日志分开，避免同一错误被多客户端重复上报淹没后端 ERROR */
+export const CLIENT_LOG_FILE_PREFIX = 'web';
 export const LOG_FILE_RE = /^app\.(\d{4}-\d{2}-\d{2})\.log$/;
+export const CLIENT_LOG_FILE_RE = /^web\.(\d{4}-\d{2}-\d{2})\.log$/;
 export const LOG_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const pad = (n: number, w = 2) => String(n).padStart(w, '0');
@@ -27,6 +30,10 @@ export function logFileName(date: string): string {
   return `${LOG_FILE_PREFIX}.${date}.log`;
 }
 
+export function clientLogFileName(date: string): string {
+  return `${CLIENT_LOG_FILE_PREFIX}.${date}.log`;
+}
+
 type Destination = ReturnType<typeof pino.destination>;
 
 /**
@@ -42,6 +49,8 @@ export class DailyFileStream {
   constructor(
     private readonly dir: string,
     private readonly keepDays: number,
+    /** 文件名前缀（app=后端日志 / web=前端日志）；清理时只清理同前缀的文件 */
+    private readonly prefix: string = LOG_FILE_PREFIX,
   ) {
     mkdirSync(dir, { recursive: true });
     process.once('exit', () => this.flushSync());
@@ -77,7 +86,7 @@ export class DailyFileStream {
     const now = new Date();
     const old = this.dest;
     const dest = pino.destination({
-      dest: join(this.dir, logFileName(formatLocalDate(now))),
+      dest: join(this.dir, this.prefix === CLIENT_LOG_FILE_PREFIX ? clientLogFileName(formatLocalDate(now)) : logFileName(formatLocalDate(now))),
       sync: false,
       mkdir: true,
       append: true,
@@ -101,8 +110,9 @@ export class DailyFileStream {
     cutoff.setDate(cutoff.getDate() - (this.keepDays - 1));
     const cutoffStr = formatLocalDate(cutoff);
     try {
+      const re = this.prefix === CLIENT_LOG_FILE_PREFIX ? CLIENT_LOG_FILE_RE : LOG_FILE_RE;
       for (const name of readdirSync(this.dir)) {
-        const m = LOG_FILE_RE.exec(name);
+        const m = re.exec(name);
         if (m && m[1] < cutoffStr) unlinkSync(join(this.dir, name));
       }
     } catch {

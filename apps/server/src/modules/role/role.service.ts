@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { withUniqueViolation } from '../../core/prisma/prisma-error.util';
 import { paginate } from '../../core/pagination/paginate';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
 import { CreateRoleDto, QueryRoleDto, UpdateRoleDto } from './role.dto';
@@ -45,17 +46,14 @@ export class RoleService {
     const exists = await this.prisma.role.findUnique({ where: { code: dto.code } });
     if (exists) throw new BadRequestException(`角色编码「${dto.code}」已存在`);
     const { menuIds, ...data } = dto;
-    try {
-      return await this.prisma.role.create({
-        data: { ...data, ...(menuIds?.length ? { menus: { create: menuIds.map((menuId) => ({ menuId })) } } : {}) },
-      });
-    } catch (e) {
-      // 并发竞态兜底：撞唯一约束(P2002)时转友好提示而非 500
-      if (typeof e === 'object' && e !== null && (e as { code?: string }).code === 'P2002') {
-        throw new BadRequestException(`角色编码「${dto.code}」已存在`);
-      }
-      throw e;
-    }
+    // 并发竞态兜底：撞唯一约束(P2002)时转友好提示而非 500
+    return withUniqueViolation(
+      () =>
+        this.prisma.role.create({
+          data: { ...data, ...(menuIds?.length ? { menus: { create: menuIds.map((menuId) => ({ menuId })) } } : {}) },
+        }),
+      `角色编码「${dto.code}」已存在`,
+    );
   }
 
   async update(id: number, dto: UpdateRoleDto) {

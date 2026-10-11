@@ -18,7 +18,7 @@ NODE_MIN_MAJOR=20
 PNPM_VERSION="${PNPM_VERSION:-9.15.0}"
 NPM_REGISTRY="${NPM_REGISTRY:-https://registry.npmmirror.com}"
 
-[ "$(id -u)" = "0" ] || { echo "!! 请使用 root 执行（deploy.config.json 的 sshUser 设为 root）"; exit 1; }
+[ "$(id -u)" = "0" ] || { echo "!! 请使用 root 执行（deploy/envs/<环境>.env 的 SSH_USER 设为 root）"; exit 1; }
 [ -f "$ENV_FILE" ] || { echo "!! 缺少 $ENV_FILE"; exit 1; }
 tr -d '\r' < "$ENV_FILE" > "$ENV_FILE.lf" && mv "$ENV_FILE.lf" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
@@ -48,6 +48,12 @@ fi
 echo "    Node: $(node -v)"
 
 npm config set registry "$NPM_REGISTRY" >/dev/null
+# npm 全局 bin 可能不在非交互 SSH 的精简 PATH 里（node 与 npm 前缀不一致时），统一挂上，
+# 否则下面安装的 pnpm/pm2 在本脚本及后续 remote-deploy 中都找不到
+NPM_BIN="$(npm prefix -g 2>/dev/null || true)/bin"
+if [ -d "$NPM_BIN" ] && [[ ":$PATH:" != *":$NPM_BIN:"* ]]; then
+  export PATH="$NPM_BIN:$PATH"
+fi
 if [ "$(pnpm -v 2>/dev/null || true)" != "$PNPM_VERSION" ]; then
   npm install -g "pnpm@$PNPM_VERSION" --no-audit --no-fund
 fi
@@ -101,17 +107,33 @@ else
   fi
 
   echo "==> [3/7] 创建数据库 $DB_NAME 与账号 $DB_USER"
+  # ★ 建库：库名/账号/密码取自 shared/.env 的 DATABASE_URL；仅当主机是 127.0.0.1/localhost 时执行，
+  #   使用云数据库时跳过（需在云控制台自行建库建账号）
   mysql "${MYSQL_AUTH[@]}" -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
   if [ "$DB_USER" = "root" ]; then
     echo "    DATABASE_URL 使用 root 账号：不修改 root 密码（生产建议使用独立账号）"
   else
     # SQL 字符串字面量转义：反斜杠与单引号
     SQL_PASS="${DB_PASS//\\/\\\\}"; SQL_PASS="${SQL_PASS//\'/\'\'}"
+    # MySQL 8 的 validate_password 组件（默认 MEDIUM）会拒绝弱密码（ERROR 1819），
+    # 导致建账号一步中止、库建好但账号缺失（后续 Prisma P1000）：
+    # 建账号期间临时放宽为 LOW，完成后恢复（与 db-remote.sh 的处理一致）
+    PW_POLICY="$(mysql "${MYSQL_AUTH[@]}" -N -e "SHOW VARIABLES LIKE 'validate_password%'" 2>/dev/null | awk '$1 ~ /policy$/ {print $NF}' | head -n 1)"
+    if [ -n "$PW_POLICY" ] && [ "$PW_POLICY" != "LOW" ]; then
+      mysql "${MYSQL_AUTH[@]}" -e "SET GLOBAL validate_password.policy=LOW" 2>/dev/null \
+        || mysql "${MYSQL_AUTH[@]}" -e "SET GLOBAL validate_password_policy=LOW" 2>/dev/null || true
+      echo "    （已临时放宽 MySQL 密码策略以创建应用账号，完成后恢复为 $PW_POLICY；建议 env 中使用强密码）"
+    fi
+    # ★ 建应用账号并授权（localhost 与 127.0.0.1 两个来源都建，避免 socket/TCP 认证差异）
     mysql "${MYSQL_AUTH[@]}" -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$SQL_PASS';"
     mysql "${MYSQL_AUTH[@]}" -e "ALTER USER '$DB_USER'@'localhost' IDENTIFIED BY '$SQL_PASS';"
     mysql "${MYSQL_AUTH[@]}" -e "GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'localhost'; FLUSH PRIVILEGES;"
     # 127.0.0.1 走 TCP，MySQL 按 localhost 账号匹配；同时建 127.0.0.1 账号兼容 skip-name-resolve
     mysql "${MYSQL_AUTH[@]}" -e "CREATE USER IF NOT EXISTS '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$SQL_PASS'; ALTER USER '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$SQL_PASS'; GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'127.0.0.1'; FLUSH PRIVILEGES;"
+    if [ -n "$PW_POLICY" ] && [ "$PW_POLICY" != "LOW" ]; then
+      mysql "${MYSQL_AUTH[@]}" -e "SET GLOBAL validate_password.policy=$PW_POLICY" 2>/dev/null \
+        || mysql "${MYSQL_AUTH[@]}" -e "SET GLOBAL validate_password_policy=$PW_POLICY" 2>/dev/null || true
+    fi
   fi
   echo "    完成"
 fi
@@ -122,21 +144,9 @@ mkdir -p "$APP_DIR/releases" "$APP_DIR/shared/logs" "$APP_DIR/shared/pm2"
 
 # ---------- Nginx 站点 ----------
 echo "==> [5/7] 配置 Nginx 站点"
-PORT="$(node "$HERE/env-tool.cjs" get "$ENV_FILE" PORT 3000)"
-SITE_CONF="$(mktemp)"
-tr -d '\r' < "$HERE/nginx-site.conf" | sed -e "s#__APP_DIR__#$APP_DIR#g" -e "s#__PORT__#$PORT#g" > "$SITE_CONF"
-if [ -d /etc/nginx/sites-available ]; then
-  SITE="/etc/nginx/sites-available/$APP_NAME"
-  # 已配置过 HTTPS（certbot 改写过）的站点不覆盖，避免丢失证书配置
-  if [ -f "$SITE" ] && grep -q "ssl_certificate" "$SITE"; then echo "    已存在 HTTPS 站点配置，保留不覆盖"; else cp "$SITE_CONF" "$SITE"; fi
-  ln -sf "$SITE" "/etc/nginx/sites-enabled/$APP_NAME"
-  rm -f /etc/nginx/sites-enabled/default
-else
-  SITE="/etc/nginx/conf.d/$APP_NAME.conf"
-  if [ -f "$SITE" ] && grep -q "ssl_certificate" "$SITE"; then echo "    已存在 HTTPS 站点配置，保留不覆盖"; else cp "$SITE_CONF" "$SITE"; fi
-  rm -f /etc/nginx/conf.d/default.conf
-fi
-rm -f "$SITE_CONF"
+# 站点 server 块、路由片段（支持 SITE_PATH 子路径部署）、共享域名注入统一由 nginx-setup.sh 生成；
+# remote-deploy.sh 每次发布也会调用它刷新，域名/子路径等配置变更无需重新 init
+bash "$HERE/nginx-setup.sh" "$APP_DIR" "$APP_NAME" "$ENV_FILE"
 # CentOS 系默认 nginx.conf 自带 default_server 监听 80，与站点冲突时去掉其 default_server 标记
 sed -i 's/listen\(\s\+\)80 default_server;/listen\180;/; s/listen\(\s\+\)\[::\]:80 default_server;/listen\1[::]:80;/' /etc/nginx/nginx.conf 2>/dev/null || true
 nginx -t

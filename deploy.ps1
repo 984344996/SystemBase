@@ -14,11 +14,15 @@
 #   .\deploy.ps1 <环境> rollback [版本号] 回滚到上一版本（或指定版本），数据库不回退
 #   .\deploy.ps1 <环境> restart|start|stop
 #   .\deploy.ps1 <环境> ssl 域名          部署 HTTPS（Let's Encrypt + 自动续期）
+#   .\deploy.ps1 <环境> db-backup [备注]  备份服务器数据库并拉回本地 backup\<环境>\（服务器保留 7 天）
+#   .\deploy.ps1 <环境> db-restore <文件>  用本地 backup\<环境>\xxx.sql.gz 恢复服务器数据库（需输入库名确认）
+#   .\deploy.ps1 <环境> doctor            环境体检：版本/服务/健康检查/磁盘/错误日志/备份 + 本地与服务器配置差异
 #   .\deploy.ps1 <环境> db-remote-on [IP] / db-remote-off [IP]
 #   .\deploy.ps1 <环境> ssh               登录服务器
-# 环境: remote-pre（预发布）/ remote-release（正式），对应 deploy/envs/<环境>.env
+# 环境: remote-<名字>（如 remote-pre 预发布 / remote-release 正式），对应 deploy/envs/<环境>.env
 # 前置:
-#   1. 复制 deploy/envs/remote-pre.env.example 为 deploy/envs/remote-pre.env 并填写 SSH_HOST 与应用配置
+#   1. 复制 deploy/envs/remote.env.example 为 deploy/envs/<环境>.env 并填写 SSH_HOST 与应用配置
+#      （所有远程环境共用这一份模板；新增环境复制同一份，环境名只能小写字母、数字、连字符）
 #   2. 已配置 SSH 免密登录（见 docs/deploy.md；Windows 不支持 SSH_PASSWORD）
 # 可选: -SkipTests 跳过发布前单测；$env:DB_ROOT_PASS='xxx' init 时提供 MySQL root 密码
 # ============================================================
@@ -39,7 +43,7 @@ function Write-Step([string]$msg) { Write-Host "`n==> $msg" -ForegroundColor Cya
 function Fail([string]$msg) { Write-Host "✗ $msg" -ForegroundColor Red; exit 1 }
 
 function Show-Usage {
-  Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 6 -First 18 | ForEach-Object { $_ -replace '^# ?', '' }
+  Get-Content $PSCommandPath -Encoding UTF8 | Select-Object -Skip 6 -First 21 | ForEach-Object { $_ -replace '^# ?', '' }
   exit 1
 }
 
@@ -47,7 +51,7 @@ function Show-Usage {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail "需要 Node.js ≥ 20" }
 if (-not $Environment -or $Environment -in @("-h", "--help", "help")) { Show-Usage }
 $envsFile = Join-Path $root "deploy\envs\$Environment.env"
-if (-not (Test-Path $envsFile)) { Fail "缺少 $envsFile（复制 .env.example 后填写）" }
+if (-not (Test-Path $envsFile)) { Fail "缺少 $envsFile（先复制 deploy\envs\remote.env.example 为该文件后填写）" }
 function Get-EnvValue([string]$key, [string]$default = "") {
   return [string](& node $envTool get $envsFile $key $default | Select-Object -First 1)
 }
@@ -60,6 +64,10 @@ $appDir = Get-EnvValue "DEPLOY_DIR" "/opt/systembase"; if (-not $appDir) { $appD
 $appName = Get-EnvValue "APP_NAME" "systembase"; if (-not $appName) { $appName = "systembase" }
 $keep = Get-EnvValue "KEEP_RELEASES" "5"; if (-not $keep) { $keep = "5" }
 $registry = Get-EnvValue "NPM_REGISTRY" "https://registry.npmmirror.com"
+# 服务器安装/使用的 pnpm 版本与仓库 packageManager 锁定值保持一致（与 deploy.sh 行为相同；取不到时用服务器脚本内置默认）
+$pmSpec = [string](& node -p "require('./package.json').packageManager || ''" | Select-Object -First 1)
+$pmVer = "9"
+if ($pmSpec -and $pmSpec -like "pnpm@*") { $pmVer = $pmSpec.Substring(6) }
 if ($appDir -notmatch '^/[\w./-]+$' -or $appDir -eq "/") { Fail "DEPLOY_DIR 必须是绝对路径，如 /opt/systembase" }
 if ($appName -notmatch '^[a-z][a-z0-9-]*$') { Fail "APP_NAME 只能包含小写字母、数字、连字符" }
 
@@ -67,12 +75,13 @@ if ($appName -notmatch '^[a-z][a-z0-9-]*$') { Fail "APP_NAME 只能包含小写�
 $runDir = Join-Path $root ".run"
 if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Force -Path $runDir | Out-Null }
 $envProd = Join-Path $runDir "env.production"
-$deployKeys = '^\s*(SSH_HOST|SSH_PORT|SSH_USER|SSH_PASSWORD|DEPLOY_DIR|APP_NAME|KEEP_RELEASES|NPM_REGISTRY)='
+$deployKeys = '^\s*(SSH_HOST|SSH_PORT|SSH_USER|SSH_PASSWORD|DEPLOY_DIR|APP_NAME|KEEP_RELEASES|NPM_REGISTRY|DB_ROOT_PASS)='
 $lines = @(Get-Content $envsFile -Encoding UTF8 | Where-Object { $_ -notmatch $deployKeys })
 [IO.File]::WriteAllText($envProd, (($lines -join "`n") + "`n"), $utf8NoBom)
 
 $target = "$sshUser@$($sshHost)"
-$sshOpts = @("-p", $sshPort, "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30")
+# accept-new：首次连接新服务器时自动接受主机指纹（非交互下不会卡在确认提示）
+$sshOpts = @("-p", $sshPort, "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=30", "-o", "StrictHostKeyChecking=accept-new")
 $ops = "bash $appDir/current/deploy/server/ops.sh $appDir $appName"
 $script:RemoteCode = 0
 
@@ -86,8 +95,17 @@ function Invoke-Remote([string]$cmd, [switch]$Tty, [switch]$NoThrow) {
   if ($script:RemoteCode -ne 0 -and -not $NoThrow) { Fail "远程命令执行失败（退出码 $($script:RemoteCode)）" }
 }
 
+# 捕获远程命令输出（用于取得服务器上生成的备份文件路径）；不重定向 stderr（PS 5.1 会当异常）
+function Invoke-RemoteCapture([string]$cmd) {
+  $a = @() + $sshOpts + @("-o", "BatchMode=yes") + @($target, $cmd)
+  $out = @(& ssh @a)
+  if ($LASTEXITCODE -ne 0) { Fail "远程命令执行失败（退出码 $LASTEXITCODE）" }
+  return $out
+}
+
 function Send-Files([string[]]$files, [string]$dest) {
-  $a = @("-P", $sshPort, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-q") + $files + @("${target}:$dest")
+  # 与 ssh 保持同样的首次连接策略，避免 scp 卡在主机指纹确认
+  $a = @("-P", $sshPort, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", "-q") + $files + @("${target}:$dest")
   & scp @a
   if ($LASTEXITCODE -ne 0) { Fail "上传失败: $($files -join ', ')" }
 }
@@ -104,7 +122,9 @@ function Test-EnvProd {
 }
 
 function Get-SiteUrl {
-  return ((Get-EnvValue "CORS_ORIGINS" "http://$sshHost") -split ",")[0]
+  # 子路径部署（SITE_PATH=/systembase-pre）时访问地址要带上该前缀，与 deploy.sh 一致
+  $p = Get-EnvValue "SITE_PATH" ""
+  return (((Get-EnvValue "CORS_ORIGINS" "http://$sshHost") -split ",")[0] + $p)
 }
 
 # 转 LF 并以 UTF-8（无 BOM）写回：服务器上 bash 不认 CRLF
@@ -113,15 +133,22 @@ function Convert-ToLF([string]$path) {
   [IO.File]::WriteAllText($path, $c, $utf8NoBom)
 }
 
+# vite base：根路径部署 "/"；子路径部署（SITE_PATH=/systembase-pre）为 "/systembase-pre/"（带尾斜杠）
+function Get-SiteBasePath {
+  $p = Get-EnvValue "SITE_PATH" ""
+  if (-not $p) { return "/" }
+  if (-not $p.StartsWith("/")) { $p = "/" + $p }
+  return ($p.TrimEnd("/") + "/")
+}
+
 # ---------- 构建 ----------
 function Invoke-Build {
   if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { Fail "未找到 pnpm，请执行 corepack enable（或 npm i -g pnpm@9）" }
   $pv = [string](& pnpm -v | Select-Object -First 1)
   if ($pv -notmatch '^9\.') { Fail "需要 pnpm 9.x（当前: $pv）。执行 corepack enable，或 npm i -g pnpm@9" }
-  if (-not (Test-Path (Join-Path $root "node_modules"))) {
-    Write-Step "安装依赖"
-    Invoke-Checked "依赖安装失败" { pnpm install --frozen-lockfile }
-  }
+  # 始终按 lockfile 同步依赖：node_modules 存在但 lockfile 已变时，避免用旧依赖构建出与服务器不一致的产物
+  Write-Step "同步依赖（lockfile 未变化时秒级完成）"
+  Invoke-Checked "依赖安装失败" { pnpm install --frozen-lockfile }
   Write-Step "构建共享包 + 生成 Prisma Client"
   Invoke-Checked "共享包构建失败" { pnpm --filter "@sb/shared" build }
   Invoke-Checked "Prisma Client 生成失败" { pnpm --filter "@sb/server" prisma:generate }
@@ -132,7 +159,13 @@ function Invoke-Build {
   Write-Step "构建后端（nest build）"
   Invoke-Checked "后端构建失败" { pnpm --filter "@sb/server" build }
   Write-Step "构建前端（vue-tsc + vite build）"
-  Invoke-Checked "前端构建失败" { pnpm --filter "@sb/web" build }
+  # 子路径部署（SITE_PATH）：vite base / 路由 / API 前缀随构建产物自动适配，与 deploy.sh 一致
+  $env:SB_BASE_PATH = Get-SiteBasePath
+  try {
+    Invoke-Checked "前端构建失败" { pnpm --filter "@sb/web" build }
+  } finally {
+    Remove-Item Env:SB_BASE_PATH -ErrorAction SilentlyContinue
+  }
 }
 
 # ---------- 打包：只含运行所需文件，node_modules 在服务器按 lockfile 安装 ----------
@@ -189,7 +222,7 @@ function Invoke-Deploy([string]$mode = "deploy") {
     Remove-Item $localScript -Force
 
     if ($mode -eq "fresh") { Write-Step "服务器执行重置发布" } else { Write-Step "服务器执行发布（依赖/迁移/切换/重启/健康检查）" }
-    $cmd = "tr -d '\r' < $rscript > $rscript.lf; NPM_REGISTRY='$registry' bash $rscript.lf '$appDir' '/tmp/$tarName' '$mode' '$appName' '$keep'; rc=`$?; rm -f $rscript $rscript.lf '/tmp/$tarName'; exit `$rc"
+    $cmd = "tr -d '\r' < $rscript > $rscript.lf; NPM_REGISTRY='$registry' PNPM_VERSION='$pmVer' bash $rscript.lf '$appDir' '/tmp/$tarName' '$mode' '$appName' '$keep'; rc=`$?; rm -f $rscript $rscript.lf '/tmp/$tarName'; exit `$rc"
     Invoke-Remote $cmd -NoThrow
     if ($script:RemoteCode -ne 0) { Fail "发布失败（线上仍为原版本或已自动回滚）。排查: .\sb.ps1 $Environment logs pm2" }
   } finally {
@@ -211,6 +244,18 @@ function Assert-Released {
 }
 
 # ---------- 命令分发 ----------
+# 每个命令在服务器上实际发生的动作（与 sb.sh 一致）：
+#   deploy   本机构建打包 → 上传 → 装依赖 → migrate deploy → 切软链 → PM2 重启 → 健康检查（失败自动回滚）
+#   init     服务器装环境 → 建库建账号 → Nginx 站点 → 放行防火墙 → PM2 自启 → 再执行一次 deploy
+#   fresh    服务端 prisma migrate reset 清库后重新发布（需输入库名确认）
+#   status   读取服务器 current 版本、PM2/Nginx 状态、磁盘、今日 ERROR/WARN 数、健康检查
+#   logs     读服务器当天日志文件（级别/日期/follow/pm2）
+#   releases / rollback   列出历史版本 / 切换软链回滚（数据库不回退）
+#   restart / start / stop  重启/启动/停止应用（start、stop 连带 Nginx）
+#   ssl      申请证书 + 301 跳转 + 自动续期
+#   db-remote-on / off     临时开放/关闭数据库远程访问
+#   ssh      交互式登录服务器
+#   db-backup / db-restore / doctor   调用 deploy\server 下同名脚本（在服务器上执行）
 $cmdName = $Command.ToLower()
 switch ($cmdName) {
   "deploy" { Invoke-Deploy }
@@ -235,8 +280,8 @@ switch ($cmdName) {
     Remove-Item $tmp -Recurse -Force
 
     Write-Step "2/3 初始化服务器（Node20 / pnpm / PM2 / Nginx / MySQL / 建库 / 站点）"
-    $rootPass = if ($env:DB_ROOT_PASS) { $env:DB_ROOT_PASS } else { "" }
-    Invoke-Remote "cd $setupDir && DB_ROOT_PASS='$rootPass' NPM_REGISTRY='$registry' bash setup-server.sh '$appDir' '$appName'; rc=`$?; rm -rf $setupDir; exit `$rc" -Tty
+    $rootPass = if ($env:DB_ROOT_PASS) { $env:DB_ROOT_PASS } else { Get-EnvValue "DB_ROOT_PASS" }
+    Invoke-Remote "cd $setupDir && DB_ROOT_PASS='$rootPass' NPM_REGISTRY='$registry' PNPM_VERSION='$pmVer' bash setup-server.sh '$appDir' '$appName'; rc=`$?; rm -rf $setupDir; exit `$rc" -Tty
 
     Write-Step "3/3 首次发布"
     Invoke-Deploy
@@ -262,11 +307,19 @@ switch ($cmdName) {
     Assert-Released; Invoke-Remote "$ops $cmdName"
   }
   "logs" {
+    # 参数会拼进远端命令，先做白名单校验（级别仅字母，日期 YYYY-MM-DD），与 deploy.sh 一致
+    if ($Arg1 -and $Arg1 -notin @("pm2", "follow", "-f") -and $Arg1 -notmatch '^[A-Za-z]+$') {
+      Fail "日志级别参数只支持字母（ERROR/WARN/INFO/pm2/follow）"
+    }
+    if ($Arg2 -and $Arg2 -notmatch '^\d{4}-\d{2}-\d{2}$') { Fail "日期格式应为 YYYY-MM-DD" }
     Assert-Released
     if ($Arg1 -in @("follow", "-f")) { Invoke-Remote "$ops logs follow" -Tty -NoThrow }
     else { Invoke-Remote "$ops logs '$Arg1' '$Arg2'" -NoThrow }
   }
-  "rollback" { Assert-Released; Invoke-Remote "$ops rollback '$Arg1'" }
+  "rollback" {
+    if ($Arg1 -and $Arg1 -notmatch '^\d{14}$') { Fail "版本号为 14 位时间戳（.\sb.ps1 $Environment releases 查看）" }
+    Assert-Released; Invoke-Remote "$ops rollback '$Arg1'"
+  }
   "ssl" {
     if (-not $Arg1) { Fail "用法: .\deploy.ps1 ssl 你的域名" }
     Assert-Released
@@ -280,6 +333,72 @@ switch ($cmdName) {
   "db-remote-off" {
     Assert-Released
     Invoke-Remote "bash $appDir/current/deploy/server/db-remote.sh '$appDir' off '$Arg1'" -Tty
+  }
+  # 备份：服务器端 mysqldump → 拉回本地 backup\<环境>\
+  "db-backup" {
+    Assert-Released; Test-Ssh
+    $stamp = Get-Date -Format "yyyyMMddHHmmss"
+    $localDir = Join-Path $root "backup\$Environment"
+    if (-not (Test-Path $localDir)) { New-Item -ItemType Directory -Force -Path $localDir | Out-Null }
+    Write-Step "在服务器备份数据库（环境: $Environment）"
+    $rscript = "/tmp/$appName-dbbackup-$stamp.sh"
+    $localScript = Join-Path $env:TEMP "$appName-dbbackup-$stamp.sh"
+    Copy-Item "$root\deploy\server\db-backup.sh" $localScript
+    Convert-ToLF $localScript
+    Send-Files @($localScript) $rscript
+    Remove-Item $localScript -Force
+    $lines = @(Invoke-RemoteCapture "tr -d '\r' < $rscript > $rscript.lf; bash $rscript.lf '$appDir' '$appName' backup '$Arg1'; rc=`$?; rm -f $rscript $rscript.lf; exit `$rc")
+    $remoteFile = ($lines | Where-Object { $_ -match '\.sql\.gz$' } | Select-Object -Last 1)
+    if (-not $remoteFile) { Fail "备份失败：未取得服务器上的备份文件（排查: .\sb.ps1 $Environment logs pm2）" }
+    $tarName = Split-Path $remoteFile -Leaf
+    Write-Step "拉回本地 backup\$Environment\$tarName"
+    $a = @("-P", $sshPort, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-q", "${target}:${remoteFile}", (Join-Path $localDir $tarName))
+    & scp @a
+    if ($LASTEXITCODE -ne 0) { Fail "下载备份失败" }
+    Write-Host "✓ 已保存到 backup\$Environment\$tarName" -ForegroundColor Green
+  }
+  # 恢复：危险操作，需输入库名确认；服务器脚本恢复前会自动先备份当前库
+  "db-restore" {
+    Assert-Released; Test-Ssh
+    $src = $Arg1
+    if (-not $src) { Fail "用法: .\sb.ps1 $Environment db-restore backup\$Environment\xxx.sql.gz" }
+    if (-not (Test-Path $src)) { Fail "本地备份文件不存在: $src" }
+    $dbName = [string](& node $envTool db $envProd | Select-Object -Index 4)
+    Write-Host ""
+    Write-Host "====================================================" -ForegroundColor Red
+    Write-Host "  危险操作：服务器数据库将被覆盖" -ForegroundColor Red
+    Write-Host "  环境: $Environment    服务器: $target    数据库: $dbName" -ForegroundColor Red
+    Write-Host "  来源: $src" -ForegroundColor Red
+    Write-Host "====================================================" -ForegroundColor Red
+    $confirm = Read-Host "请输入数据库名 $dbName 确认"
+    if ($confirm -ne $dbName) { Write-Host "已取消，未做任何改动"; return }
+    $stamp = Get-Date -Format "yyyyMMddHHmmss"
+    Write-Step "上传备份文件并恢复"
+    $rfile = "/tmp/$appName-restore-$stamp.sql.gz"
+    $rscript = "/tmp/$appName-restore-$stamp.sh"
+    $localScript = Join-Path $env:TEMP "$appName-restore-$stamp.sh"
+    Copy-Item "$root\deploy\server\db-backup.sh" $localScript
+    Convert-ToLF $localScript
+    Send-Files @($src) $rfile
+    Send-Files @($localScript) $rscript
+    Remove-Item $localScript -Force
+    Invoke-Remote "tr -d '\r' < $rscript > $rscript.lf; bash $rscript.lf '$appDir' '$appName' restore '$rfile'; rc=`$?; rm -f $rscript $rscript.lf $rfile; exit `$rc"
+    Write-Host "✓ 恢复完成" -ForegroundColor Green
+  }
+  # 体检：上传本地应用配置，比对服务器 shared/.env 是否有未同步改动
+  "doctor" {
+    Assert-Released; Test-Ssh
+    $stamp = Get-Date -Format "yyyyMMddHHmmss"
+    Write-Step "环境体检（$Environment → $target）"
+    $expect = "/tmp/$appName-expect-$stamp.env"
+    $rscript = "/tmp/$appName-doctor-$stamp.sh"
+    $localScript = Join-Path $env:TEMP "$appName-doctor-$stamp.sh"
+    Copy-Item "$root\deploy\server\doctor.sh" $localScript
+    Convert-ToLF $localScript
+    Send-Files @($envProd) $expect
+    Send-Files @($localScript) $rscript
+    Remove-Item $localScript -Force
+    Invoke-Remote "tr -d '\r' < $rscript > $rscript.lf; bash $rscript.lf '$appDir' '$appName' '$expect'; rc=`$?; rm -f $rscript $rscript.lf $expect; exit `$rc" -NoThrow
   }
   "ssh" { & ssh @sshOpts $target }
   { $_ -in @("help", "-h", "--help") } { Show-Usage }

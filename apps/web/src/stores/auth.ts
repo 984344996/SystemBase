@@ -9,6 +9,10 @@ export const useAuthStore = defineStore("auth", {
     user: null as Profile | null,
     menus: [] as MenuNode[],
     routesLoaded: false,
+    /** 管理员重置过密码：登录后必须先改密（路由守卫据此拦截） */
+    mustChangePassword: false,
+    /** 密码已过期：不阻断访问，仅提示 */
+    passwordExpired: false,
     // localStorage 的响应式镜像：getter 不能直接读 localStorage（非响应式，computed 会永久缓存旧值，
     // 登录成功后 isLoggedIn 仍是 false，路由守卫会把用户弹回登录页）
     token: localStorage.getItem(TOKEN_KEY) as string | null,
@@ -18,11 +22,18 @@ export const useAuthStore = defineStore("auth", {
     isSuper: (s) => s.user?.roleCodes?.includes("SUPER_ADMIN") ?? false,
   },
   actions: {
-    async login(payload: { username: string; password: string }): Promise<LoginResult> {
+    async login(payload: {
+      username: string;
+      password: string;
+      captchaId?: string;
+      captchaCode?: string;
+    }): Promise<LoginResult> {
       const result = await authApi.login(payload);
       localStorage.setItem(TOKEN_KEY, result.accessToken);
       localStorage.setItem(REFRESH_TOKEN_KEY, result.refreshToken);
       this.token = result.accessToken;
+      this.mustChangePassword = !!result.mustChangePassword;
+      this.passwordExpired = !!result.passwordExpired;
       return result;
     },
     /** 拉取个人信息与可见菜单（登录后/刷新页面时调用） */
@@ -30,6 +41,9 @@ export const useAuthStore = defineStore("auth", {
       const [profile, menus] = await Promise.all([authApi.profile(), authApi.menus()]);
       this.user = profile;
       this.menus = menus;
+      // profile 是权威来源：刷新页面后仍能保持「必须改密」的拦截状态
+      this.mustChangePassword = !!profile.mustChangePassword;
+      this.passwordExpired = !!profile.passwordExpired;
     },
     /** 按钮级权限：超管为 * 全放行 */
     hasPerm(code?: string) {
@@ -54,10 +68,8 @@ export const useAuthStore = defineStore("auth", {
       clearAuth();
       resetDynamicRoutes(); // 清掉上一个账号注册的动态路由，防止换账号后旧路由仍可访问
       this.$reset();
-      window.location.href = "/login";
-    },
-    reset() {
-      this.$reset();
+      // 子路径部署时跟随 vite base（如 /systembase-pre/login）
+      window.location.href = `${import.meta.env.BASE_URL}login`;
     },
   },
 });

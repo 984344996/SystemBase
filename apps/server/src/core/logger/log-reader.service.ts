@@ -4,7 +4,10 @@ import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { PageResult } from '@sb/shared';
-import { formatLocalDate, LOG_DATE_RE, LOG_FILE_RE, logFileName } from './log-streams';
+import { CLIENT_LOG_FILE_RE, clientLogFileName, formatLocalDate, LOG_DATE_RE, LOG_FILE_RE, logFileName } from './log-streams';
+
+/** 日志来源：server=后端 app.*.log / client=前端 web.*.log */
+export type LogSource = 'server' | 'client';
 
 export interface LogEntry {
   level: string;
@@ -25,6 +28,8 @@ export interface LogQuery {
   traceId?: string;
   /** 解析后的精确过滤（业务语义，如 event==='login'） */
   match?: (entry: LogEntry) => boolean;
+  /** 日志来源：server=后端日志 / client=前端日志（独立文件） */
+  source?: LogSource;
   page: number;
   pageSize: number;
 }
@@ -60,23 +65,23 @@ export class LogReaderService {
       .sort((a, b) => (a.date < b.date ? 1 : -1));
   }
 
-  /** 日期 -> 文件绝对路径（严格校验格式，杜绝路径穿越） */
-  filePath(date?: string): string {
+  /** 日期 -> 文件绝对路径（严格校验格式，杜绝路径穿越）；source=client 读前端日志 web.*.log */
+  filePath(date?: string, source: LogSource = 'server'): string {
     const d = date || formatLocalDate();
     if (!LOG_DATE_RE.test(d)) throw new BadRequestException('日期格式应为 YYYY-MM-DD');
-    return join(this.dir, logFileName(d));
+    return join(this.dir, source === 'client' ? clientLogFileName(d) : logFileName(d));
   }
 
   /** 已存在的日志文件路径（下载用） */
-  existingFile(date?: string): string {
-    const path = this.filePath(date);
+  existingFile(date?: string, source: LogSource = 'server'): string {
+    const path = this.filePath(date, source);
     if (!existsSync(path)) throw new NotFoundException(`${date || '今天'} 没有日志文件`);
     return path;
   }
 
   async query(q: LogQuery): Promise<LogPage> {
     const date = q.date || formatLocalDate();
-    const path = this.filePath(date);
+    const path = this.filePath(date, q.source || 'server');
     const empty: LogPage = { list: [], total: 0, page: q.page, pageSize: q.pageSize, date, truncated: false };
     if (!existsSync(path)) return empty;
 

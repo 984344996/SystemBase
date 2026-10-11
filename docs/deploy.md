@@ -4,10 +4,10 @@
 |---|---|---|
 | 本地一键启动 | 开发 | `./sb.sh local` / `sb.ps1 local` |
 | **服务器一键部署（推荐）** | 单台云服务器，PM2 + Nginx，秒级回滚 | `./sb.sh remote-pre ...` / `./sb.sh remote-release ...` |
-| Docker Compose | 已有 Docker 环境 | `make up` |
 
-> 统一入口 `sb.sh`（Mac/Linux）/ `sb.ps1`（Windows）按环境分发：`local` 走本地启动，`remote-pre` / `remote-release` 走远程部署。
-> 环境配置全部在 `deploy/envs/*.env`（模板 `*.env.example` 已提交，实际文件 gitignore）。
+> 统一入口 `sb.sh`（Mac/Linux）/ `sb.ps1`（Windows）按环境分发：`local` 走本地启动，`remote-<名字>` 走远程部署。
+> 想看「发了哪条命令 → 调用哪个脚本 → 服务器做了什么」的完整调用链与流程图，见 [flow.md](./flow.md)。
+> 环境配置全部在 `deploy/envs/*.env`（模板 `remote.env.example`、`local.env.example` 已提交，实际文件 gitignore）。
 > 脚本若提示无执行权限，先执行一次 `chmod +x sb.sh`，或用 `bash sb.sh ...` 调用。
 
 ## 环境配置（deploy/envs/）
@@ -17,6 +17,9 @@
 | 本地开发 | `deploy/envs/local.env` | `PORT` 后端端口、`WEB_PORT` 前端端口、`DATABASE_URL` 本机库等；启动时自动同步为 `apps/server/.env`（Nest 读取），只编辑前者 |
 | 预发布 | `deploy/envs/remote-pre.env` | 分两段：部署段（`SSH_HOST`/`SSH_PORT`/`SSH_USER`/`SSH_PASSWORD`/`DEPLOY_DIR`/`APP_NAME` 等，不上传）+ 应用段（发布时上传为服务器 `.env`） |
 | 正式 | `deploy/envs/remote-release.env` | 同上，指向正式服务器 |
+
+> 所有远程环境共用一份模板 `deploy/envs/remote.env.example`：**新增环境**复制同一份为 `deploy/envs/remote-<名字>.env` 后填写即可
+> （环境名只能小写字母、数字、连字符；脚本按文件名识别环境，`./sb.sh remote-<名字> deploy` 直接用，无需改脚本）。
 
 - `SSH_PASSWORD` 留空 = 走 SSH 免密（推荐 `ssh-copy-id`）；填写则用 sshpass（需本机安装：macOS `brew install sshpass` / Ubuntu `apt install sshpass`；**Windows 仅支持免密**）
 - 同一台服务器部署预发 + 正式两个环境时，`DEPLOY_DIR` 与 `APP_NAME` 必须都不同（如 `/opt/systembase-pre` + `systembase-pre`）
@@ -51,7 +54,7 @@ cp deploy/envs/local.env.example deploy/envs/local.env    # 首次：确认 DATA
 
 ```bash
 # 1. 环境配置（已被 gitignore；含 SSH 与应用配置，一个文件搞定）
-cp deploy/envs/remote-pre.env.example deploy/envs/remote-pre.env   # 填 SSH_HOST、DATABASE_URL 密码、JWT_SECRET、CORS_ORIGINS
+cp deploy/envs/remote.env.example deploy/envs/remote-pre.env   # 填 SSH_HOST、DATABASE_URL 密码、JWT_SECRET、CORS_ORIGINS
 # 2. SSH 免密（推荐；Windows 可用: type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh root@IP "cat >> ~/.ssh/authorized_keys"）
 ssh-keygen -t ed25519            # 已有密钥可跳过
 ssh-copy-id root@服务器IP
@@ -60,7 +63,7 @@ ssh-copy-id root@服务器IP
 ```
 
 `init` 会：安装 Node 20 / pnpm 9 / PM2 / Nginx /（库在本机时）MySQL 8 → 按 `DATABASE_URL` 建库建账号 → 生成 Nginx 站点 → 放行防火墙 80/443 → PM2 开机自启 → 执行一次发布。可重复执行。
-MySQL root 免密不可用时：`DB_ROOT_PASS='root密码' ./sb.sh remote-pre init`。
+MySQL root 免密不可用时：在 env 部署段填 `DB_ROOT_PASS`（或临时 `DB_ROOT_PASS='root密码' ./sb.sh remote-pre init`）。
 
 ### 日常命令
 
@@ -73,8 +76,40 @@ MySQL root 免密不可用时：`DB_ROOT_PASS='root密码' ./sb.sh remote-pre in
 | `./sb.sh remote-pre restart` / `start` / `stop` | 重启后端 / 启动（含 Nginx）/ 停止（含 Nginx，页面下线） |
 | `./sb.sh remote-pre ssl 域名` | Let's Encrypt 证书 + 301 跳转 + 自动续期；完成后把 `CORS_ORIGINS` 改为 `https://域名` 再发布 |
 | `./sb.sh remote-pre db-remote-on [IP]` / `db-remote-off` | 临时开放 / 关闭数据库远程访问（排查用，用完关闭；拒绝对 root 开放） |
-| `./sb.sh remote-pre fresh` | **清空远程数据库**后重新发布（需输入库名确认） |
+| `./sb.sh remote-pre db-backup [备注]` | 备份服务器数据库：服务器端 mysqldump → 拉回本地 `backup/remote-pre/`（服务器保留 7 天，可用 `KEEP_BACKUP_DAYS` 调整） |
+| `./sb.sh remote-pre db-restore <文件>` | 用本地备份文件恢复服务器数据库（**需输入库名确认**，服务器恢复前会自动先备份当前库） |
+| `./sb.sh remote-pre doctor` | 环境体检：版本/构建信息、PM2/Nginx/MySQL、健康检查、磁盘、今日 ERROR/WARN、最近备份，并比对**本地 env 与服务器 `shared/.env` 的配置差异** |
+| `./sb.sh remote-pre fresh` | **清空远程数据库**后重新发布（需输入库名确认；清库前自动备份到服务器 `shared/backup`） |
 | `./sb.sh remote-pre ssh` | 登录服务器 |
+
+### 数据库备份与恢复
+
+```bash
+./sb.sh remote-release db-backup 发版前      # 备份 → backup/remote-release/xxx.sql.gz
+ls backup/remote-release                      # 或在本地用 ./sb.sh local db-list 看本地备份
+./sb.sh remote-release db-restore backup/remote-release/system_base_20261003120000.sql.gz
+```
+
+- 备份在**服务器**执行（`mysqldump --single-transaction`，不锁表），完成后 `scp` 回本地；服务器 `shared/backup` 同时保留一份并按 7 天滚动清理
+- 恢复是危险操作：必须输入**数据库名**确认；服务器脚本在恢复前会自动对当前库做一次备份（文件名带 `auto-before-restore`）
+- 本地开发库同样可备份：`./sb.sh local db-backup [备注]` / `./sb.sh local db-restore <文件>` / `./sb.sh local db-list`
+- `backup/` 目录已被 gitignore（含业务数据，勿提交）
+
+### 环境体检（doctor）
+
+`./sb.sh <环境> doctor` 除常规巡检外，会把**本地 `deploy/envs/<环境>.env` 的应用段**与服务器 `shared/.env` 逐键比对（不打印值），提示：
+
+- `值不同`：本地改过但没发布 → 重新 `deploy`
+- `仅本地有（未发布）`：新增的配置项 → 重新 `deploy`
+- `仅服务器有`：服务器上手工加过 → 确认是否需要写回本地 env
+
+### 提交前卡口（可选）
+
+```bash
+./sb.sh setup-hooks     # 一次性：把 .githooks 设为 git hooks 目录
+```
+
+之后每次 `git commit` 会自动跑 `pnpm lint`（类型检查 + `prisma validate`）与 `pnpm test`，失败则提交终止。临时跳过：`SKIP_HOOKS=1 git commit ...`。不引入 husky 等依赖。
 
 可选：`SKIP_TESTS=1 ./sb.sh remote-pre deploy` 跳过单测（Windows：`.\sb.ps1 -SkipTests remote-pre deploy`）。
 
@@ -110,51 +145,7 @@ MySQL root 免密不可用时：`DB_ROOT_PASS='root密码' ./sb.sh remote-pre in
 - seed 为编译产物（`dist/database/seed.js`），服务器不装 ts-node；每次发布都执行（幂等，自动补齐新增的菜单与权限点）
 - 服务器依赖用 `pnpm install --frozen-lockfile`，版本与本地完全一致；Prisma 引擎走国内镜像
 
-## 方式三：Docker Compose
-
-```bash
-cd deploy
-cat > .env <<'EOF'
-JWT_SECRET=请替换为至少16位随机串
-MYSQL_ROOT_PASSWORD=请替换数据库密码
-CORS_ORIGINS=http://你的域名:8080
-WEB_PORT=8080
-LOCK_DRIVER=db           # 需要多实例/Redis 锁时改为 redis 并用 make up-redis
-EOF
-docker compose up -d --build     # server 启动时自动执行 prisma migrate deploy
-
-# 初始化种子数据（首次；幂等，可重复执行）
-docker compose exec server node dist/database/seed.js
-```
-
-访问 `http://服务器IP:8080`（admin / admin123，**上线后立即改密码**）。
-
-服务组成：
-
-| 容器 | 说明 |
-|---|---|
-| sb-mysql | 数据卷持久化 `sb-mysql-data` |
-| sb-redis | 分布式锁用（LOCK_DRIVER=db 时不启动）|
-| sb-server | 多阶段构建、仅生产依赖、非 root 运行；启动前 `prisma migrate deploy`，迁移失败则不启动；healthcheck `/api/health` |
-| sb-web | nginx:alpine 托管前端静态资源 + `/api` 反代 + history fallback + 安全响应头 |
-
-### 升级
-
-```bash
-git pull
-cd deploy && docker compose up -d --build    # 新迁移在 server 启动时自动执行
-```
-
-### 回滚
-
-迁移只向前执行。回滚代码前确认目标版本的 schema 与当前库兼容；不兼容时先从备份恢复数据库：
-
-```bash
-git checkout <上一个发布tag>
-docker compose up -d --build
-```
-
-### 手动部署（不用脚本时）
+## 方式三：手动部署（不用脚本时）
 
 ```bash
 pnpm build                                     # 产物：apps/web/dist、apps/server/dist
@@ -172,7 +163,7 @@ NODE_ENV=production node dist/main.js          # 用 pm2/systemd 守护
 |---|---|
 | 修改 `schema.prisma` 后生成迁移（开发） | `make db-migrate name=add_booking` |
 | 拉取代码后同步本地库 | `make db-deploy` |
-| 生产 | 容器启动自动执行 `prisma migrate deploy`；独立部署手动执行 `pnpm prisma:deploy` |
+| 生产 | 服务器部署脚本自动执行 `prisma migrate deploy`；手动部署执行 `pnpm prisma:deploy` |
 | 原型阶段随便改（不留迁移） | `make db-push`，**禁止用于共享库/生产库** |
 
 约定：
@@ -183,35 +174,125 @@ NODE_ENV=production node dist/main.js          # 用 pm2/systemd 守护
 
 ## 备份与恢复
 
+推荐用脚本（详见上文「数据库备份与恢复」）：`./sb.sh <环境> db-backup [备注]` / `db-restore <文件>` / `db-list`，本地库同样支持（`./sb.sh local db-backup`）。
+
+手动方式（可直接配成框架里的定时任务）：
+
 ```bash
-# 备份（可直接配成框架里的定时任务）
-docker exec sb-mysql mysqldump -uroot -p$MYSQL_ROOT_PASSWORD system_base > backup-$(date +%F).sql
+# 备份
+mysqldump -uroot -p --single-transaction system_base > backup-$(date +%F).sql
 # 恢复
-docker exec -i sb-mysql mysql -uroot -p$MYSQL_ROOT_PASSWORD system_base < backup-2026-09-30.sql
+mysql -uroot -p system_base < backup-2026-09-30.sql
 ```
 
 ## 日志位置与排障
 
-日志只落文件（每天一个 `app.YYYY-MM-DD.log`），跨版本 / 容器重建都不丢：
-服务器部署在 `shared/logs/`，Docker 部署在命名卷 `sb-logs:/app/logs`。
+日志只落文件（每天一个 `app.YYYY-MM-DD.log`），跨版本切换不丢：服务器部署在 `shared/logs/`。
 
 ```bash
-# 服务器部署：本机直接查
 ./deploy.sh logs ERROR                    # 今天的错误
 ./deploy.sh logs WARN 2026-09-29          # 指定日期的警告
 ./deploy.sh ssh  →  grep 3f2a8b1c /opt/systembase/shared/logs/app.2026-09-30.log   # 按 traceId 串全链路
-
-# Docker 部署
-docker exec sb-server ls -lh /app/logs
-# app.2026-09-29.log  app.2026-09-30.log
-
-docker exec sb-server grep '"level":"ERROR"' /app/logs/app.2026-09-30.log   # 当天错误
-docker exec sb-server grep 3f2a8b1c /app/logs/app.2026-09-30.log            # 按报障 traceId 串起全链路
-docker cp sb-server:/app/logs ./logs-backup                                  # 拷出分析
 ```
 
 前端的错误提示里带「追踪码」（traceId 前 12 位），直接拿去 grep 即可；断网/超时的请求也有追踪码（前端生成随请求发出）。
 也可在管理端「系统管理 → 系统日志」按日期/级别/分类/traceId 检索或下载原文件。字段与级别约定见 [architecture.md](./architecture.md#日志体系只落文件不落库)。
+
+## 通用模块配置
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `UPLOAD_DIR` | uploads | 文件实体目录（服务器部署建议放 `shared/uploads`，跨版本保留） |
+| `UPLOAD_MAX_SIZE` | 10485760（10MB） | 单个文件字节上限；同步调大 nginx `client_max_body_size` |
+| `UPLOAD_ALLOWED_MIME` | 图片/pdf/文本/zip | 逗号分隔；`*` 表示不限制（仍拦截 `.sh/.exe/.bat/.php/.jsp/.js` 等可执行扩展名） |
+| `LOG_ALERT_THRESHOLD` | 50 | 日志告警 ERROR 阈值（`system.logAlert` 任务用） |
+| `LOG_ALERT_WEBHOOK` | 空 | 告警推送地址（企业微信/钉钉/自建钩子），留空只写日志 |
+| `METRICS_ENABLED` | off | `/api/metrics` 开关 |
+| `CLIENT_LOG_ENABLED` | on | 前端日志上报开关（off 时接口仍返回 204，但不落盘） |
+| `SWAGGER_ENABLED` | 生产 off / 其他 on | `/api/docs` 开关 |
+
+## 同一台机器部署多个环境（预发 + 正式）
+
+可以，但**下面这些在每个环境的 env 里必须互不相同**，否则会互相打架：
+
+| 配置项 | 预发示例 | 正式示例 | 冲突后果 |
+|---|---|---|---|
+| `PORT`（后端监听） | 3001 | 3000 | 端口被占用，第二个应用起不来 |
+| `SITE_PORT`（Nginx 监听） | 8080 | 80 | 两个站点抢占同一端口 |
+| `SITE_DOMAIN`（server_name） | `pre.example.com` | `www.example.com` | 都是 `_` 时 Nginx 报 `conflicting server name`，**后装的站点被忽略** |
+| `DEPLOY_DIR` | `/opt/systembase-pre` | `/opt/systembase` | 版本目录混在一起 |
+| `APP_NAME`（PM2 + 站点名） | `systembase-pre` | `systembase` | PM2 应用与 Nginx 站点配置互相覆盖 |
+| `DATABASE_URL` 库名 | `system_base_pre` | `system_base` | 预发操作清到正式数据 |
+
+其他已自动隔离：PM2 应用名、Nginx 站点文件（`/etc/nginx/conf.d/<APP_NAME>.conf`）、日志与备份目录（各自 `shared/`）。
+
+**强烈建议用域名区分而不是只靠端口**：给预发配 `SITE_DOMAIN="pre.example.com"`，正式配 `SITE_DOMAIN="www.example.com"`，两者都用 80/443，Nginx 按 `server_name` 分流，访问地址更自然，也方便分别配 HTTPS。
+
+补充两点：
+
+- `UPLOAD_DIR` 默认是相对路径 `uploads`（相对运行目录），切换版本后文件会“丢”（旧 release 目录里）。多环境或长期运行请在 env 里显式设为绝对路径，如 `UPLOAD_DIR=/opt/systembase-pre/shared/uploads`
+- `./sb.sh <env> stop` 现在只摘掉**本环境**的 Nginx 站点配置并停本环境 PM2 应用，**不会** `systemctl stop nginx`（否则会把同机其他环境一起停掉）
+
+## 前端（浏览器）日志
+
+前端异常也会落盘，但**与后端日志分成两个文件**：
+
+| 文件 | 内容 | 视角 |
+|---|---|---|
+| `app.YYYY-MM-DD.log` | 后端日志（app / access / audit / job） | 服务器视角 |
+| `web.YYYY-MM-DD.log` | 前端上报（category=client） | 客户端视角 |
+
+**为什么分开**：前端错误会被每个浏览器各报一次（同一个 bug，100 个用户 = 100 条），混进后端日志会淹没真正的后端 ERROR，也会让日志告警统计失真。分开后靠 **traceId 串联**——前端报错时带上最近一次请求的 `X-Trace-Id`，两个文件 grep 同一个 ID 就能拼出完整链路。
+
+采集范围（`apps/web/src/utils/clientLog.ts`）：
+
+- `window.onerror`（含 img/script 资源加载失败）、`unhandledrejection`、Vue 组件渲染错误（`app.config.errorHandler`）
+- 业务代码可主动上报：`reportClientLog({ msg, level, stack })`
+- **只报 error / warn**，同类错误 60 秒内去重，每分钟最多 10 条，上报失败静默（不影响用户操作）
+- 上报接口 `POST /api/logs/client`：公开（登录页也能报）+ 限流 30 条/分钟/IP；URL 只保留 origin+pathname（query 里的 token 不落盘），内容超长自动截断
+
+查看：管理端「系统管理 → 系统日志」顶部可切换 **后端日志 / 前端日志**，前端日志展示页面 URL、UA、堆栈，同样支持按 traceId 检索与下载原文件（权限复用 `system:log:list` / `system:log:download`）。
+
+## 可观测性
+
+| 端点 | 用途 |
+|---|---|
+| `GET /api/health` | 综合健康（数据库），脚本与外部探活用；故障返回 **503** |
+| `GET /api/health/live` | 存活探针：进程级，恒 200（判断是否该重启） |
+| `GET /api/health/ready` | 就绪探针：数据库 + Redis（仅 `LOCK_DRIVER=redis` 时）+ 日志目录可写，不可服务时 503（判断是否该接流量） |
+| `GET /api/metrics` | Prometheus 文本指标，`METRICS_ENABLED=on` 才启用（默认关闭） |
+
+- 指标内容（零依赖，进程内累计）：`sb_http_requests_total`（方法/路由模板/状态码）、`sb_http_request_duration_ms_sum|max`、`sb_job_runs_total`（任务处理器/成功失败）、进程内存与 CPU、运行时间、构建信息
+- 指标会暴露路由与流量信息，请只在内网暴露或由 nginx 加鉴权
+
+**日志告警**：内置任务处理器 `system.logAlert`（默认不创建任务，需要时在「定时任务」页新增并启用）
+
+- 扫描当日 ERROR 条数，超过阈值写 WARN 告警（可在系统日志检索到），并可选推送 webhook
+- 参数：`{"threshold": 20}`；环境变量 `LOG_ALERT_THRESHOLD`（默认 50）、`LOG_ALERT_WEBHOOK`（企业微信/钉钉/自建钩子，留空不推送）
+
+**多实例权限一致性**：`LOCK_DRIVER=redis` 时，用户/角色/菜单变更会通过 Redis pub/sub 广播失效事件，其他实例立即丢弃缓存（无需等 `PERMISSION_CACHE_TTL`）；Redis 不可用时自动退化为「仅本实例失效」。
+
+## 安全配置（可选，默认宽松）
+
+在 `deploy/envs/<环境>.env` 中配置，改动后**重新发布**才生效（远程环境配置改动可被 `doctor` 检出）。默认策略刻意宽松，避免升级后把管理员锁死。
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PASSWORD_MIN_LENGTH` | 8 | 密码最小长度 |
+| `PASSWORD_COMPLEXITY` | on | 是否要求大小写/数字组合（off 关闭） |
+| `PASSWORD_EXPIRE_DAYS` | 0 | 密码有效期天数，0 = 不过期；过期后登录返回 `passwordExpired`，前端提示尽快修改（不阻断） |
+| `LOGIN_FAIL_LOCK_COUNT` | 5 | 连续登录失败几次后锁定（0 = 不锁定），按「用户名 + IP」计数 |
+| `LOGIN_FAIL_LOCK_MINUTES` | 10 | 锁定时长（分钟） |
+| `LOGIN_FAIL_WINDOW_MIN` | 30 | 失败计数窗口（分钟，超时重新计数） |
+| `LOGIN_CAPTCHA` | off | `off` / `auto`（失败多次后要求）/ `on`（总是要求）。`on|auto` 需服务端装有 `svg-captcha`（已加入 server 依赖）；未安装时自动降级并告警一次 |
+| `IP_WHITELIST` / `IP_BLACKLIST` | 空 | 逗号分隔，支持 `192.168.*` 前缀通配；黑名单优先。配了白名单则仅名单内可访问（含 `/api/health`，监控机记得加） |
+
+行为说明：
+
+- **强制改密**：管理员重置某人密码后，该账号 `mustChangePassword=true` → 登录后返回该标志，前端跳 `/change-password` 全屏改密页，路由守卫拦截其他页面；改密成功后自动解除
+- **密码策略共用**：管理员重置与用户自助改密走同一套校验（长度/复杂度/弱密码字典/不得包含用户名/不得与旧密码相同），失败信息直接展示给用户
+- **多实例**：失败计数与验证码存进程内，多实例部署时各实例独立计数；需要严格一致请用 Redis（后续按 `LOCK_DRIVER` 扩展）
+- 本地开发建议把 `THROTTLE_LOGIN_LIMIT` 放宽（模板默认 20），避免频繁登录调试被限流
 
 ## 上线检查清单
 
@@ -219,7 +300,7 @@ docker cp sb-server:/app/logs ./logs-backup                                  # �
 - [ ] CORS_ORIGINS 已配置真实域名白名单（生产缺失启动失败）
 - [ ] admin 默认密码已修改
 - [ ] MySQL root 密码已替换
-- [ ] HTTPS（建议在 nginx/compose 前再挂一层带证书的反代；生产环境后端会发送 HSTS 头）
+- [ ] HTTPS（`./sb.sh <环境> ssl 域名` 一键配置 Let's Encrypt；生产环境后端会发送 HSTS 头）
 - [ ] `BODY_LIMIT` 与 nginx `client_max_body_size` 按业务需要调整（默认 1mb / 10m）
 - [ ] 多实例部署：`LOCK_DRIVER=redis`；如要求权限变更秒级生效，调小 `PERMISSION_CACHE_TTL`
 - [ ] 数据库定时备份任务已配置

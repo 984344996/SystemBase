@@ -8,7 +8,7 @@ pnpm monorepo，前后端分离：
 apps/server   NestJS 10 + Prisma 5 + MySQL     框架核心(core) + 系统模块(modules) + 示例(example)
 apps/web      Vue 3 + TS + Element Plus 按需    登录 / 布局 / 动态菜单 / 系统管理页面
 packages/shared  前后端共享工具                  时间区间算法、分页常量、通用枚举
-deploy        Dockerfile / nginx / compose     一键部署
+deploy        envs + server 部署脚本           环境配置 + 服务器一键部署（PM2 + Nginx）
 ```
 
 ## 分层铁律
