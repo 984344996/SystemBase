@@ -74,6 +74,7 @@ PM_VER="9"
 if [[ "$PM_SPEC" == pnpm@* ]]; then PM_VER="${PM_SPEC#pnpm@}"; fi
 
 # 应用配置 = 环境文件剔除部署专用键（上传为服务器 .env，每次发布前重新生成）
+# ⚠ 新增部署段变量时必须加进这份名单（deploy.ps1 的 $deployKeys 同步），否则会被上传到服务器
 grep -vE "^[[:space:]]*(SSH_HOST|SSH_PORT|SSH_USER|SSH_PASSWORD|DEPLOY_DIR|APP_NAME|KEEP_RELEASES|NPM_REGISTRY|DB_ROOT_PASS)=" "$ENV_FILE" \
   | sed 's/\r$//' > "$ENV_PROD"
 chmod 600 "$ENV_PROD"   # 含 JWT_SECRET / 数据库密码，限本机当前用户可读
@@ -192,7 +193,7 @@ deploy() {
   echo -e "${G}===========================================${N}"
   echo -e "${G} 发布完成: ${stamp}（环境: $ENV_NAME → ${TARGET}）${N}"
   echo -e "${G} 访问地址: $(site_url)/${N}"
-  if [ "$mode" = fresh ]; then echo -e "${R} 数据已重置，默认账号 admin / admin123，请立即登录修改密码！${N}"; fi
+  if [ "$mode" = fresh ]; then echo -e "${R} 数据已重置：超管 admin / env 中 ADMIN_INITIAL_PASSWORD（默认 admin123），请立即登录修改密码${N}"; fi
   echo -e "${G} 查看状态: ./sb.sh $ENV_NAME status    回滚: ./sb.sh $ENV_NAME rollback${N}"
   echo -e "${G}===========================================${N}"
 }
@@ -226,7 +227,7 @@ case "$CMD" in
     remote_tty "cd /tmp/$APP_NAME-setup && tr -d '\r' < setup-server.sh > s.sh && DB_ROOT_PASS='${DB_ROOT_PASS:-}' NPM_REGISTRY='$NPM_REGISTRY' PNPM_VERSION='$PM_VER' bash s.sh '$APP_DIR' '$APP_NAME'; rc=\$?; rm -rf /tmp/$APP_NAME-setup; exit \$rc"
     step "3/3 首次发布"
     deploy
-    echo -e "${Y}首次部署完成（${ENV_NAME}）：默认账号 admin / admin123，请立即登录修改密码；确认安全组已放行 80/443。${N}"
+    echo -e "${Y}首次部署完成（${ENV_NAME}）：超管 admin / env 中 ADMIN_INITIAL_PASSWORD（默认 admin123），请立即登录修改密码；确认安全组已放行 80/443。${N}"
     ;;
 
   fresh)

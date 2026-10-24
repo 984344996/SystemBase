@@ -72,6 +72,7 @@ if ($appDir -notmatch '^/[\w./-]+$' -or $appDir -eq "/") { Fail "DEPLOY_DIR 必�
 if ($appName -notmatch '^[a-z][a-z0-9-]*$') { Fail "APP_NAME 只能包含小写字母、数字、连字符" }
 
 # 应用配置 = 环境文件剔除部署专用键（每次发布前重新生成到 .run，打包与 init 上传用；产物，gitignore）
+# ⚠ 新增部署段变量时必须加进 $deployKeys（deploy.sh 同步），否则会被上传到服务器
 $runDir = Join-Path $root ".run"
 if (-not (Test-Path $runDir)) { New-Item -ItemType Directory -Force -Path $runDir | Out-Null }
 $envProd = Join-Path $runDir "env.production"
@@ -233,7 +234,7 @@ function Invoke-Deploy([string]$mode = "deploy") {
   Write-Host "`n===========================================" -ForegroundColor Green
   Write-Host " 发布完成: $stamp（环境: $Environment → $target）" -ForegroundColor Green
   Write-Host " 访问地址: $url/" -ForegroundColor Green
-  if ($mode -eq "fresh") { Write-Host " 数据已重置，默认账号 admin / admin123，请立即登录修改密码！" -ForegroundColor Red }
+  if ($mode -eq "fresh") { Write-Host " 数据已重置：超管 admin / env 中 ADMIN_INITIAL_PASSWORD（默认 admin123），请立即登录修改密码" -ForegroundColor Red }
   Write-Host " 查看状态: .\sb.ps1 $Environment status    回滚: .\sb.ps1 $Environment rollback" -ForegroundColor Green
   Write-Host "===========================================" -ForegroundColor Green
 }
@@ -285,7 +286,7 @@ switch ($cmdName) {
 
     Write-Step "3/3 首次发布"
     Invoke-Deploy
-    Write-Host "首次部署完成：默认账号 admin / admin123，请立即登录修改密码；确认安全组已放行 80/443。" -ForegroundColor Yellow
+    Write-Host "首次部署完成：超管 admin / env 中 ADMIN_INITIAL_PASSWORD（默认 admin123），请立即登录修改密码；确认安全组已放行 80/443。" -ForegroundColor Yellow
   }
 
   "fresh" {

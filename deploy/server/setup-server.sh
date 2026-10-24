@@ -139,8 +139,9 @@ else
 fi
 
 # ---------- 目录 ----------
-echo "==> [4/7] 创建目录 $APP_DIR/{releases,shared/logs,shared/pm2}"
-mkdir -p "$APP_DIR/releases" "$APP_DIR/shared/logs" "$APP_DIR/shared/pm2"
+echo "==> [4/7] 创建目录 $APP_DIR/{releases,shared/logs,shared/pm2,shared/uploads}"
+# shared/uploads：上传文件跨版本共享（每次发布由 remote-deploy.sh 软链到版本目录）
+mkdir -p "$APP_DIR/releases" "$APP_DIR/shared/logs" "$APP_DIR/shared/pm2" "$APP_DIR/shared/uploads"
 
 # ---------- Nginx 站点 ----------
 echo "==> [5/7] 配置 Nginx 站点"

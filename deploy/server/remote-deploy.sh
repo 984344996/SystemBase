@@ -42,7 +42,7 @@ export PRISMA_ENGINES_MIRROR="${PRISMA_ENGINES_MIRROR:-https://registry.npmmirro
 [ "$KEEP" -ge 2 ] 2>/dev/null || KEEP=2   # 至少保留上一版本，保证可回滚
 
 step() { echo "==> $*"; }
-mkdir -p "$APP_DIR/releases" "$SHARED/logs" "$SHARED/pm2"
+mkdir -p "$APP_DIR/releases" "$SHARED/logs" "$SHARED/pm2" "$SHARED/uploads"
 
 # 发布互斥：防止同一秒/并发的两次发布命中同一版本目录互相覆盖（flock 随脚本退出自动释放）
 exec 9>"$APP_DIR/.deploy.lock"
@@ -81,6 +81,25 @@ node "$REL/deploy/server/env-tool.cjs" check "$SHARED/.env" >/dev/null
 ln -sfn "$SHARED/.env" "$REL/apps/server/.env"
 rm -rf "$REL/apps/server/logs" && ln -sfn "$SHARED/logs" "$REL/apps/server/logs"
 PORT="$(node "$REL/deploy/server/env-tool.cjs" get "$SHARED/.env" PORT 3000)"
+
+# ---------- 上传文件：跨版本共享（shared/uploads） ----------
+# 上传文件写在 apps/server/uploads（UPLOAD_DIR 默认值）。必须软链到 shared，否则：
+#   - 每次发布新版本，之前上传的文件在新版本里「消失」
+#   - 清理旧版本（KEEP_RELEASES）时文件被一起删除；回滚后新上传的文件不可见
+# 兼容旧版本：历史版本目录里残留的真实 uploads 目录，合并进 shared（不覆盖同名）后也改为软链，
+# 这样回滚到这些旧版本时同样指向共享目录
+mkdir -p "$SHARED/uploads"
+link_uploads() {  # $1 = 版本目录
+  local d="$1/apps/server/uploads"
+  [ -d "$1/apps/server" ] || return 0
+  if [ -d "$d" ] && [ ! -L "$d" ]; then
+    cp -an "$d/." "$SHARED/uploads/" 2>/dev/null || true
+    rm -rf "$d"
+  fi
+  ln -sfn "$SHARED/uploads" "$d"
+}
+for r in "$APP_DIR"/releases/*/; do link_uploads "${r%/}"; done
+link_uploads "$REL"
 
 # ---------- 数据库预检：迁移前确认可达，避免装完依赖才在 migrate 失败 ----------
 DB_INFO="$(node "$REL/deploy/server/env-tool.cjs" db "$SHARED/.env")"
@@ -174,6 +193,7 @@ else
 fi
 step "初始化/补齐种子数据（幂等：只补缺失的菜单、权限点、超管与默认任务）"
 # ★ 种子数据：幂等补齐（超管/菜单/权限点/默认任务/内置字典与参数），可重复执行
+#   超管初始密码取 shared/.env 的 ADMIN_INITIAL_PASSWORD（默认 admin123），只在超管不存在时生效
 node dist/database/seed.js
 
 # ---------- 前端静态资源 SELinux 标签 ----------

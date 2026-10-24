@@ -202,7 +202,7 @@ mysql -uroot -p system_base < backup-2026-09-30.sql
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `UPLOAD_DIR` | uploads | 文件实体目录（服务器部署建议放 `shared/uploads`，跨版本保留） |
+| `UPLOAD_DIR` | uploads | 文件实体目录（服务器部署时自动软链到 `shared/uploads`，跨版本保留，无需修改） |
 | `UPLOAD_MAX_SIZE` | 10485760（10MB） | 单个文件字节上限；同步调大 nginx `client_max_body_size` |
 | `UPLOAD_ALLOWED_MIME` | 图片/pdf/文本/zip | 逗号分隔；`*` 表示不限制（仍拦截 `.sh/.exe/.bat/.php/.jsp/.js` 等可执行扩展名） |
 | `LOG_ALERT_THRESHOLD` | 50 | 日志告警 ERROR 阈值（`system.logAlert` 任务用） |
@@ -230,7 +230,8 @@ mysql -uroot -p system_base < backup-2026-09-30.sql
 
 补充两点：
 
-- `UPLOAD_DIR` 默认是相对路径 `uploads`（相对运行目录），切换版本后文件会“丢”（旧 release 目录里）。多环境或长期运行请在 env 里显式设为绝对路径，如 `UPLOAD_DIR=/opt/systembase-pre/shared/uploads`
+- 上传文件统一存放在服务器 `shared/uploads/`（与 `shared/logs` 一样跨版本保留）：每次发布自动把版本目录的 `apps/server/uploads` 软链过去，回滚到旧版本也能看到全部文件。历史版本目录里残留的文件会在首次发布时自动合并进 `shared/uploads`（不覆盖同名）。`UPLOAD_DIR` 保持默认即可
+- 超管初始密码取 env 的 `ADMIN_INITIAL_PASSWORD`（默认 `admin123`，随应用段上传到服务器 `shared/.env`），**只在超管账号不存在时生效**（首次 init、fresh 重置后）；账号已存在时改这个值不会改变现有密码，请登录后在页面修改
 - `./sb.sh <env> stop` 现在只摘掉**本环境**的 Nginx 站点配置并停本环境 PM2 应用，**不会** `systemctl stop nginx`（否则会把同机其他环境一起停掉）
 
 ## 前端（浏览器）日志

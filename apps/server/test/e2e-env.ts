@@ -24,9 +24,14 @@ export function setupE2eEnv(): void {
   process.env.THROTTLE_LIMIT ||= '1000'; // 放宽：E2E 不测限流
   process.env.THROTTLE_LOGIN_LIMIT ||= '1000';
   process.env.LOGIN_FAIL_LOCK_COUNT ||= '0'; // 关闭锁定：E2E 有故意失败的登录用例
+  // 用例固定用 admin/admin123 登录：强制覆盖，不受本机 local.env 的 ADMIN_INITIAL_PASSWORD 影响
+  process.env.ADMIN_INITIAL_PASSWORD = 'admin123';
 
-  // 日志写到临时目录，不污染工作区
+  // 日志与上传文件写到临时目录，不污染工作区（上传用例会真实落盘）
   const logDir = join(tmpdir(), 'sb-e2e-logs');
   mkdirSync(logDir, { recursive: true });
   process.env.LOG_DIR ||= logDir;
+  const uploadDir = join(tmpdir(), 'sb-e2e-uploads');
+  mkdirSync(uploadDir, { recursive: true });
+  process.env.UPLOAD_DIR ||= uploadDir;
 }

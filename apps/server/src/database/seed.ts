@@ -33,6 +33,9 @@ function loadDotEnv(file = join(process.cwd(), '.env')): void {
 }
 loadDotEnv();
 
+/** 超管初始密码：.env 的 ADMIN_INITIAL_PASSWORD，未配置时为 admin123 */
+const ADMIN_INITIAL_PASSWORD = process.env.ADMIN_INITIAL_PASSWORD || 'admin123';
+
 const prisma = new PrismaClient();
 
 async function ensureMenu(data: {
@@ -181,13 +184,14 @@ async function main() {
   await ensureConfig({ key: 'site.name', value: 'SystemBase', type: 'STRING', group: 'base', label: '站点名称', builtin: true });
 
   // ---------- 超管账号 ----------
+  // 初始密码取 .env 的 ADMIN_INITIAL_PASSWORD（默认 admin123）；只在账号不存在时生效，已存在不覆盖
   const admin = await prisma.user.upsert({
     where: { username: 'admin' },
     update: {},
     create: {
       username: 'admin',
       name: '超级管理员',
-      password: await bcrypt.hash('admin123', 10),
+      password: await bcrypt.hash(ADMIN_INITIAL_PASSWORD, 10),
       remark: '内置超管；最后一个启用的超管不可禁用/删除',
     },
   });
@@ -226,7 +230,7 @@ async function main() {
     },
   });
 
-  console.log('✅ 种子数据完成：admin/admin123，菜单与默认任务已初始化');
+  console.log('✅ 种子数据完成：超管 admin（初始密码 ADMIN_INITIAL_PASSWORD），菜单与默认任务已初始化');
 }
 
 // 仅在直接执行时运行，被 import 时不产生副作用
