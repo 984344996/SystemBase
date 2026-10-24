@@ -119,16 +119,24 @@ const itemForm = reactive<Partial<DictItemRow>>({});
 
 async function loadDicts() {
   dicts.value = await dictApi.list({ keyword: keyword.value || undefined });
-  if (!current.value && dicts.value.length) selectDict(dicts.value[0]);
+  // 保持当前选中项（保存后不跳回第一个）；当前项已不存在时才回落到第一个
+  const keep = current.value && dicts.value.find((d) => d.id === current.value!.id);
+  if (keep) current.value = keep;
+  else if (dicts.value.length) selectDict(dicts.value[0]);
+  else current.value = null;
 }
 
+/** 请求序号：快速切换字典时丢弃过期响应，避免右侧显示成上一个字典的项 */
+let itemsSeq = 0;
 async function selectDict(d: DictRow) {
   current.value = d;
+  const seq = ++itemsSeq;
   loadingItems.value = true;
   try {
-    items.value = await dictApi.items(d.id);
+    const list = await dictApi.items(d.id);
+    if (seq === itemsSeq) items.value = list;
   } finally {
-    loadingItems.value = false;
+    if (seq === itemsSeq) loadingItems.value = false;
   }
 }
 
@@ -139,18 +147,20 @@ function openCreateDict() {
 
 function openEditDict() {
   if (!current.value) return;
-  Object.assign(dictForm, current.value);
+  const { id, code, name, status, remark } = current.value;
+  Object.assign(dictForm, { id, code, name, status, remark: remark ?? "" });
   dictDialog.value = true;
 }
 
 async function submitDict() {
   saving.value = true;
   try {
-    if (dictForm.id) await dictApi.update(dictForm.id, dictForm);
-    else await dictApi.create(dictForm);
+    // 只提交 DTO 白名单字段（整行带上 id/_count 会被后端 forbidNonWhitelisted 拒绝；编码创建后不可改）
+    const { id, code, name, status, remark } = dictForm;
+    if (id) await dictApi.update(id, { name, status, remark });
+    else await dictApi.create({ code, name, status, remark });
     ElMessage.success("保存成功");
     dictDialog.value = false;
-    current.value = null;
     loadDicts();
   } finally {
     saving.value = false;
@@ -164,7 +174,8 @@ function openCreateItem() {
 }
 
 function openEditItem(row: DictItemRow) {
-  Object.assign(itemForm, row);
+  const { id, label, value, sort, status, remark } = row;
+  Object.assign(itemForm, { id, label, value, sort, status, remark: remark ?? "" });
   itemDialog.value = true;
 }
 
@@ -172,8 +183,10 @@ async function submitItem() {
   if (!current.value) return;
   saving.value = true;
   try {
-    if (itemForm.id) await dictApi.updateItem(itemForm.id, itemForm);
-    else await dictApi.addItem(current.value.id, itemForm);
+    const { id, label, value, sort, status, remark } = itemForm;
+    const data = { label, value, sort, status, remark };
+    if (id) await dictApi.updateItem(id, data);
+    else await dictApi.addItem(current.value.id, data);
     ElMessage.success("保存成功");
     itemDialog.value = false;
     selectDict(current.value);

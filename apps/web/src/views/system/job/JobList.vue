@@ -20,6 +20,7 @@
           <el-switch
             :model-value="row.status === 'ENABLED'"
             :disabled="!auth.hasPerm('system:job:update') || !row.handlerExists"
+            :loading="busyId === row.id"
             @change="toggle(row)"
           />
         </template>
@@ -34,7 +35,7 @@
       <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
       <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="row.handlerExists" v-permission="'system:job:run'" link type="success" @click="runNow(row)">立即执行</el-button>
+          <el-button v-if="row.handlerExists" v-permission="'system:job:run'" link type="success" :disabled="busyId === row.id" @click="runNow(row)">立即执行</el-button>
           <el-button link type="primary" @click="openLogs(row)">日志</el-button>
           <el-button v-permission="'system:job:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-popconfirm title="确定删除该任务吗？" @confirm="remove(row)">
@@ -73,7 +74,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">保存并生效</el-button>
+        <el-button type="primary" :loading="saving" @click="submit">保存并生效</el-button>
       </template>
     </el-dialog>
 
@@ -129,6 +130,7 @@ const auth = useAuthStore();
 const rows = ref<JobRow[]>([]);
 const handlers = ref<{ key: string }[]>([]);
 const dialogVisible = ref(false);
+const saving = ref(false);
 const editingId = ref<number | null>(null);
 const logsVisible = ref(false);
 const activeJob = ref<JobRow | null>(null);
@@ -169,6 +171,7 @@ function openEdit(row: JobRow) {
 }
 
 async function submit() {
+  if (saving.value) return;
   if (!form.name || !form.cronExpr) return ElMessage.warning("请填写任务名与 cron 表达式");
   let params: string | undefined = form.params.trim() || undefined;
   if (params) {
@@ -178,29 +181,48 @@ async function submit() {
       return ElMessage.warning("参数必须是合法 JSON");
     }
   }
-  const data = { ...form, params };
-  if (editingId.value) await jobApi.update(editingId.value, data);
-  else {
-    if (!form.handlerKey) return ElMessage.warning("请选择处理器");
-    await jobApi.create(data);
+  if (!editingId.value && !form.handlerKey) return ElMessage.warning("请选择处理器");
+  const { handlerKey, ...rest } = form;
+  saving.value = true;
+  try {
+    // 编辑不提交 handlerKey（处理器创建后不可改，UpdateJobDto 白名单不含该字段）
+    if (editingId.value) await jobApi.update(editingId.value, { ...rest, params });
+    else await jobApi.create({ ...rest, handlerKey, params });
+    ElMessage.success("已保存并即时生效");
+    dialogVisible.value = false;
+    load();
+  } finally {
+    saving.value = false;
   }
-  ElMessage.success("已保存并即时生效");
-  dialogVisible.value = false;
-  load();
 }
 
+/** 进行中的行操作（开关/立即执行）：同一行同一时刻只允许一个，防连点重复执行 */
+const busyId = ref<number | null>(null);
+
 async function toggle(row: JobRow) {
-  await jobApi.toggle(row.id);
-  ElMessage.success(row.status === "ENABLED" ? "已暂停" : "已启用");
-  load();
+  if (busyId.value) return;
+  busyId.value = row.id;
+  try {
+    await jobApi.toggle(row.id);
+    ElMessage.success(row.status === "ENABLED" ? "已暂停" : "已启用");
+    load();
+  } finally {
+    busyId.value = null;
+  }
 }
 
 async function runNow(row: JobRow) {
+  if (busyId.value) return;
+  busyId.value = row.id;
   ElMessage.info("已触发执行");
-  const res = await jobApi.run(row.id);
-  if (res?.status === "SUCCESS") ElMessage.success(`执行成功：${res.result?.slice(0, 80) || "无返回"}`);
-  else ElMessage.error(`执行失败：${res?.error?.slice(0, 120) || "未知错误"}`);
-  load();
+  try {
+    const res = await jobApi.run(row.id);
+    if (res?.status === "SUCCESS") ElMessage.success(`执行成功：${res.result?.slice(0, 80) || "无返回"}`);
+    else ElMessage.error(`执行失败：${res?.error?.slice(0, 120) || "未知错误"}`);
+    load();
+  } finally {
+    busyId.value = null;
+  }
 }
 
 async function remove(row: JobRow) {

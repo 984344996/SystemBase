@@ -17,7 +17,8 @@
         <el-form-item v-if="captcha">
           <div class="captcha-row">
             <el-input v-model="form.captchaCode" placeholder="验证码" :prefix-icon="Key" />
-            <div class="captcha-img" title="点击刷新" @click="loadCaptcha" v-html="captcha.svg" />
+            <!-- 用 <img> 渲染 SVG：img 里的 SVG 不执行脚本，避免 v-html 注入风险（token 在 localStorage，XSS 可直接读走） -->
+            <img class="captcha-img" title="点击刷新" :src="captchaSrc" alt="验证码" @click="loadCaptcha" />
           </div>
         </el-form-item>
         <el-button type="primary" class="login-btn" :loading="loading" @click="submit">登 录</el-button>
@@ -28,7 +29,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { isAxiosError } from "axios";
@@ -41,6 +42,7 @@ const router = useRouter();
 const route = useRoute();
 const loading = ref(false);
 const captcha = ref<Captcha | null>(null);
+const captchaSrc = computed(() => (captcha.value ? `data:image/svg+xml;utf8,${encodeURIComponent(captcha.value.svg)}` : ""));
 const form = reactive({ username: "admin", password: "", captchaCode: "" });
 
 /** 拉取验证码：服务端未启用（或依赖缺失）时返回 null，此时不显示验证码输入 */

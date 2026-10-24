@@ -13,7 +13,7 @@
       <el-form-item label="手机号"><el-input v-model="form.phone" placeholder="可留空" /></el-form-item>
       <el-form-item label="邮箱"><el-input v-model="form.email" placeholder="可留空" /></el-form-item>
       <el-form-item>
-        <el-button type="primary" @click="save">保存</el-button>
+        <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </el-form-item>
     </el-form>
     <div class="muted tip">用户名与角色由管理员在「用户管理」中维护，本人不可修改。</div>
@@ -21,13 +21,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { authApi } from "@/api/auth";
 import { useAuthStore } from "@/stores/auth";
 
 const auth = useAuthStore();
 const form = reactive({ name: "", phone: "", email: "" });
+const saving = ref(false);
 
 onMounted(() => {
   form.name = auth.user?.name || "";
@@ -37,9 +38,15 @@ onMounted(() => {
 
 async function save() {
   if (!form.name.trim()) return ElMessage.warning("姓名不能为空");
-  await authApi.updateProfile({ name: form.name.trim(), phone: form.phone, email: form.email });
-  await auth.loadUserContext(); // 顶部栏显示的是缓存的用户信息，改完重新拉取
-  ElMessage.success("资料已更新");
+  if (saving.value) return;
+  saving.value = true;
+  try {
+    await authApi.updateProfile({ name: form.name.trim(), phone: form.phone, email: form.email });
+    await auth.loadUserContext(); // 顶部栏显示的是缓存的用户信息，改完重新拉取
+    ElMessage.success("资料已更新");
+  } finally {
+    saving.value = false;
+  }
 }
 </script>
 

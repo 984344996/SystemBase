@@ -1,0 +1,91 @@
+name: CI
+
+# 推送后的自动验证（与本地 pre-commit 卡口互补）：
+#   lint（tsc/vue-tsc/prisma validate）→ 后端单测（含覆盖率防倒退门）→ 全量构建 → E2E（独立 MySQL）
+# 本地开发跳过推送前检查也不怕：这里兜底。
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # pnpm 版本与仓库 packageManager 锁定值一致
+      - name: 启用 pnpm
+        run: corepack enable
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建共享包 + 生成 Prisma Client
+        run: |
+          pnpm --filter @sb/shared build
+          pnpm --filter @sb/server prisma:generate
+
+      - name: Lint（server: tsc + prisma validate / web: vue-tsc）
+        run: pnpm -r lint
+
+      - name: 后端单元测试（含覆盖率防倒退门）
+        run: pnpm --filter @sb/server test -- --coverage --silent
+
+      - name: 全量构建
+        run: pnpm build
+
+      - name: 文档漂移检测（generated 文档与源码是否一致）
+        run: |
+          pnpm docs:gen
+          if ! git diff --exit-code docs/generated; then
+            echo "::error::docs/generated 与源码不一致——请本地跑 pnpm docs:gen 并提交"
+            git diff --stat docs/generated
+            exit 1
+          fi
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: system_base_e2e
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      # E2E 用独立库，与本机开发数据无关；global-setup 会建库/迁移/种子
+      E2E_DATABASE_URL: mysql://root:root@127.0.0.1:3306/system_base_e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 启用 pnpm
+        run: corepack enable
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建共享包 + 生成 Prisma Client
+        run: |
+          pnpm --filter @sb/shared build
+          pnpm --filter @sb/server prisma:generate
+
+      - name: E2E 主链路冒烟（登录/权限/CRUD/错误码）
+        run: pnpm --filter @sb/server test:e2e

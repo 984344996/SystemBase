@@ -24,6 +24,7 @@ export class NoticeService {
       page: query.page,
       pageSize: query.pageSize,
       sort: query.sort || 'createdAt:desc',
+      sortable: ['id', 'title', 'status', 'top', 'createdAt'],
     });
   }
 
@@ -79,12 +80,14 @@ export class NoticeService {
     const row = await this.prisma.notice.findUnique({ where: { id } });
     if (!row) throw new NotFoundException('公告不存在');
     this.assertRange(dto.startAt, dto.endAt);
+    // null = 清空有效期（长期有效）；undefined = 不修改
+    const toDate = (v: string | null | undefined) => (v === null ? null : v ? new Date(v) : undefined);
     return this.prisma.notice.update({
       where: { id },
       data: {
         ...dto,
-        startAt: dto.startAt ? new Date(dto.startAt) : undefined,
-        endAt: dto.endAt ? new Date(dto.endAt) : undefined,
+        startAt: toDate(dto.startAt),
+        endAt: toDate(dto.endAt),
       },
     });
   }
@@ -115,7 +118,7 @@ export class NoticeService {
     return { success: true };
   }
 
-  private assertRange(startAt?: string, endAt?: string): void {
+  private assertRange(startAt?: string | null, endAt?: string | null): void {
     if (startAt && endAt && new Date(startAt) > new Date(endAt)) {
       throw new BadRequestException('生效开始时间不能晚于结束时间');
     }

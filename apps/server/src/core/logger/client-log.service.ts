@@ -62,9 +62,10 @@ export class ClientLogService implements OnApplicationShutdown {
     return this.enabled;
   }
 
-  /** 写一条前端日志（字段已做脱敏与长度截断） */
+  /** 写一条前端日志（字段已做脱敏与长度截断）；超出单日字节预算或短时间内重复的条目直接丢弃 */
   write(level: ClientLogLevel, msg: string, fields: ClientLogFields = {}): void {
     if (!this.enabled) return;
+    if (!this.admit(msg, fields.stack)) return;
     const safe: Record<string, unknown> = {
       msg: clip(msg, MAX_MSG),
       url: clip(fields.url, MAX_URL),
@@ -80,6 +81,41 @@ export class ClientLogService implements OnApplicationShutdown {
       safe[k] = v;
     }
     this.logger[level](safe);
+  }
+
+  // ---------- 防刷：单日字节预算 + 去重 ----------
+  // 接口是公开的（登录页的错误也要能报），仅靠按 IP 限流挡不住多 IP 刷量；
+  // 这里给 web 日志一个单日总量上限，超出后丢弃并计数（不影响后端 app 日志）。
+  private readonly dailyBudget = Number(process.env.CLIENT_LOG_DAILY_MAX_BYTES || 50 * 1024 * 1024);
+  private budgetDay = '';
+  private budgetUsed = 0;
+  private dropped = 0;
+  private readonly recent = new Map<string, number>();
+
+  /** @returns 是否允许写入 */
+  private admit(msg: string, stack?: string): boolean {
+    const day = formatLocalTime().slice(0, 10);
+    if (day !== this.budgetDay) {
+      if (this.dropped) this.logger.warn({ event: 'client_log_dropped', day: this.budgetDay, dropped: this.dropped }, '前端日志超出单日预算，已丢弃');
+      this.budgetDay = day;
+      this.budgetUsed = 0;
+      this.dropped = 0;
+      this.recent.clear();
+    }
+    // 同一错误（msg + 堆栈前 200 字符）10 秒内只记一次：多个浏览器同时报同一个 bug 时不刷屏
+    const sig = `${msg.slice(0, 200)}|${(stack || '').slice(0, 200)}`;
+    const now = Date.now();
+    if (now - (this.recent.get(sig) ?? 0) < 10_000) return false;
+    this.recent.set(sig, now);
+    if (this.recent.size > 1000) this.recent.clear();
+
+    const size = Math.min(msg.length, MAX_MSG) + Math.min(stack?.length ?? 0, MAX_STACK) + MAX_UA + MAX_URL;
+    if (this.budgetUsed + size > this.dailyBudget) {
+      this.dropped++;
+      return false;
+    }
+    this.budgetUsed += size;
+    return true;
   }
 
   onApplicationShutdown() {

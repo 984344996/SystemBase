@@ -1,3 +1,4 @@
+import { isAxiosError } from "axios";
 import request from "@/utils/request";
 
 /**
@@ -65,16 +66,33 @@ export function reportClientLog(p: ClientLogPayload): void {
     if (p.level === "info") return; // info 不上报
     if (!allow(p)) return;
     void request
-      .post<never, unknown>("/logs/client", {
-        ...p,
-        url: p.url || location.href,
-        ua: navigator.userAgent,
-        traceId: p.traceId || lastTraceId,
-      }, { silent: true } as never)
+      .post<never, unknown>(
+        "/logs/client",
+        {
+          ...p,
+          url: p.url || location.href,
+          ua: navigator.userAgent,
+          traceId: p.traceId || lastTraceId,
+        },
+        // skipAuthRefresh：token 过期时不能让一条错误上报触发刷新甚至把用户踢回登录页
+        { silent: true, skipAuthRefresh: true },
+      )
       .catch(() => undefined);
   } catch {
     /* 上报本身不能再抛错 */
   }
+}
+
+/**
+ * 「不是 bug」的 Promise 拒绝：不上报，否则前端日志全是噪音，真正的问题被淹没。
+ * - 弹框取消/关闭（ElMessageBox 以 "cancel"/"close" reject）
+ * - 接口错误（AxiosError / 拦截器抛出的业务错误）：拦截器已提示用户，后端也有 traceId 可查
+ */
+function isNoise(reason: unknown): boolean {
+  if (reason === "cancel" || reason === "close") return true;
+  if (isAxiosError(reason)) return true;
+  // 拦截器对 code !== 0 的业务响应 reject 的是普通 Error，带后端 message
+  return reason instanceof Error && (reason as Error & { __api?: boolean }).__api === true;
 }
 
 /** 安装全局捕获：window.onerror + unhandledrejection */
@@ -96,6 +114,7 @@ export function setupClientLog(release?: string): void {
 
   window.addEventListener("unhandledrejection", (e: PromiseRejectionEvent) => {
     const reason = e.reason;
+    if (isNoise(reason)) return;
     reportClientLog({
       ...common,
       level: "error",

@@ -60,14 +60,11 @@ export const useAuthStore = defineStore("auth", {
     },
     async logout() {
       const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
-      try {
-        if (refreshToken) await authApi.logout(refreshToken);
-      } catch {
-        /* 忽略登出接口失败 */
-      }
+      // 先清本地再通知后端：即使接口失败/超时，本地登录态也已清除，不等网络才跳转
       clearAuth();
       resetDynamicRoutes(); // 清掉上一个账号注册的动态路由，防止换账号后旧路由仍可访问
       this.$reset();
+      if (refreshToken) await authApi.logout(refreshToken).catch(() => undefined);
       // 子路径部署时跟随 vite base（如 /systembase-pre/login）
       window.location.href = `${import.meta.env.BASE_URL}login`;
     },

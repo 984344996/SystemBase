@@ -64,7 +64,7 @@
       <TablePager :query="query" :total="total" :load="load" />
     </el-card>
 
-    <el-drawer v-model="dialog" :title="form.id ? '编辑公告' : '新增公告'" size="560px">
+    <el-drawer v-model="dialog" :title="editingId ? '编辑公告' : '新增公告'" size="560px">
       <el-form :model="form" label-width="90px">
         <el-form-item label="标题"><el-input v-model="form.title" /></el-form-item>
         <el-form-item label="类型">
@@ -123,16 +123,20 @@ const dialog = ref(false);
 const previewVisible = ref(false);
 const previewRow = ref<NoticeRow | null>(null);
 const range = ref<[string, string] | null>(null);
-const form = reactive<Partial<NoticeRow>>({});
+const editingId = ref<number | null>(null);
+const form = reactive({ title: "", content: "", type: "NOTICE", top: false, status: "DRAFT" });
 
 function openCreate() {
-  Object.assign(form, { id: undefined, title: "", content: "", type: "NOTICE", top: false, status: "DRAFT" });
+  editingId.value = null;
+  Object.assign(form, { title: "", content: "", type: "NOTICE", top: false, status: "DRAFT" });
   range.value = null;
   dialog.value = true;
 }
 
 function openEdit(row: NoticeRow) {
-  Object.assign(form, row);
+  editingId.value = row.id;
+  // 只取表单字段（整行 assign 会带上 id/createdAt 等，提交时被后端白名单校验拒绝）
+  Object.assign(form, { title: row.title, content: row.content, type: row.type, top: row.top, status: row.status });
   range.value = row.startAt && row.endAt ? [row.startAt, row.endAt] : null;
   dialog.value = true;
 }
@@ -141,13 +145,12 @@ async function submit() {
   if (!form.title || !form.content) return ElMessage.warning("标题与内容不能为空");
   saving.value = true;
   try {
-    const payload = {
-      ...form,
-      startAt: range.value?.[0] || undefined,
-      endAt: range.value?.[1] || undefined,
-    };
-    if (form.id) await noticeApi.update(form.id, payload);
-    else await noticeApi.create(payload);
+    if (editingId.value) {
+      // 清空有效期时显式传 null（undefined 表示不修改，原有效期会保留）
+      await noticeApi.update(editingId.value, { ...form, startAt: range.value?.[0] ?? null, endAt: range.value?.[1] ?? null });
+    } else {
+      await noticeApi.create({ ...form, startAt: range.value?.[0], endAt: range.value?.[1] });
+    }
     ElMessage.success("保存成功（发布后用户端可见）");
     dialog.value = false;
     load();

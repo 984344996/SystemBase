@@ -45,7 +45,13 @@ export const authApi = {
     request.post<never, LoginResult>("/auth/login", data),
   /** 登录验证码（服务端未启用或未安装依赖时返回 null） */
   captcha: () => request.get<never, Captcha | null>("/auth/captcha"),
-  logout: (refreshToken: string) => request.post<never, { success: boolean }>("/auth/logout", { refreshToken }),
+  /** 登出：不走 401 刷新（过期也没关系，本地照样清理），超时短，不阻塞跳转 */
+  logout: (refreshToken: string) =>
+    request.post<never, { success: boolean }>(
+      "/auth/logout",
+      { refreshToken },
+      { silent: true, skipAuthRefresh: true, timeout: 3000 },
+    ),
   profile: () => request.get<never, Profile>("/auth/profile"),
   menus: () => request.get<never, MenuNode[]>("/auth/menus"),
   changePassword: (data: { oldPassword: string; newPassword: string }) =>

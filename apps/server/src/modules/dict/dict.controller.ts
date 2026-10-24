@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { RequirePermissions } from '../../core/security/permissions.decorator';
+import { LoginOnly, RequirePermissions } from '../../core/security/permissions.decorator';
 import { OperateLog } from '../../core/operate-log/operate-log.decorator';
 import { DictService } from './dict.service';
 import { CreateDictDto, CreateDictItemDto, QueryDictDto, UpdateDictDto, UpdateDictItemDto } from './dict.dto';
@@ -73,6 +73,7 @@ export class DictController {
 
   // ---------- 业务读取（下拉用，登录即可访问） ----------
   @Get('options/:code')
+  @LoginOnly()
   @ApiOperation({ summary: '按字典编码取启用中的选项（前端下拉用）' })
   options(@Param('code') code: string) {
     return this.service.options(code);

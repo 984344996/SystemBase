@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -22,7 +23,7 @@ import { JOB_HANDLERS, JobHandler, JobContext } from './job-registry';
 import { CreateJobDto, QueryJobLogDto, UpdateJobDto } from './job.dto';
 
 @Injectable()
-export class JobService implements OnModuleInit {
+export class JobService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(JobService.name);
 
   constructor(
@@ -37,8 +38,13 @@ export class JobService implements OnModuleInit {
   ) {}
 
   // ---------- 启动时重建全部调度 ----------
+  /**
+   * 单个任务调度失败（如库里有一条 cron 库不支持的表达式）只记日志、不阻断应用启动；
+   * 错过触发窗口的补跑放到启动完成后异步执行，不阻塞端口监听（否则健康检查会超时失败）。
+   */
   async onModuleInit() {
     const jobs = await this.prisma.job.findMany();
+    const misfired: typeof jobs = [];
     for (const job of jobs) {
       if (!JOB_HANDLERS.has(job.handlerKey)) {
         this.logger.warn(`任务「${job.name}」的 handler ${job.handlerKey} 未注册(代码缺失)，已标记失效`);
@@ -47,12 +53,57 @@ export class JobService implements OnModuleInit {
         }
         continue;
       }
-      if (job.status === 'ENABLED') {
+      if (job.status !== 'ENABLED') continue;
+      try {
         await this.schedule(job.id, job.cronExpr);
-        await this.handleMisfire(job);
+        misfired.push(job);
+      } catch (e) {
+        this.logger.error(`任务「${job.name}」调度失败（cron: ${job.cronExpr}），已跳过：${(e as Error).message}`);
       }
     }
     this.logger.log(`定时任务调度就绪：${JOB_HANDLERS.size} 个 handler，${jobs.filter((j) => j.status === 'ENABLED').length} 个启用任务`);
+    setImmediate(() => {
+      for (const job of misfired) {
+        this.handleMisfire(job).catch((e) => this.logger.error(`任务「${job.name}」补跑失败: ${(e as Error).message}`));
+      }
+    });
+    this.startReconcile();
+  }
+
+  onModuleDestroy() {
+    clearInterval(this.reconcileTimer);
+  }
+
+  /**
+   * 多实例一致性：任务的增删改只直接作用于处理请求的那个实例，其他实例靠定期对账同步
+   * （库为准：ENABLED 且 cron 变化 → 重建；非 ENABLED / 已删除 → 注销）。
+   * run() 执行前也会再查一次状态，所以对账间隔内「已暂停任务在别的实例上被触发」也不会真正执行。
+   */
+  private reconcileTimer?: NodeJS.Timeout;
+  private readonly scheduledCron = new Map<number, string>();
+
+  private startReconcile() {
+    const sec = Number(this.config.get<string>('JOB_RECONCILE_SECONDS') ?? 60);
+    if (!(sec > 0)) return;
+    this.reconcileTimer = setInterval(() => {
+      this.reconcile().catch((e) => this.logger.warn(`任务调度对账失败: ${(e as Error).message}`));
+    }, sec * 1000);
+    this.reconcileTimer.unref();
+  }
+
+  async reconcile(): Promise<void> {
+    const jobs = await this.prisma.job.findMany({ select: { id: true, status: true, cronExpr: true, handlerKey: true } });
+    const live = new Set<number>();
+    for (const job of jobs) {
+      if (job.status !== 'ENABLED' || !JOB_HANDLERS.has(job.handlerKey)) continue;
+      live.add(job.id);
+      if (this.scheduledCron.get(job.id) !== job.cronExpr) {
+        await this.schedule(job.id, job.cronExpr).catch((e) =>
+          this.logger.error(`任务 #${job.id} 对账重建调度失败: ${(e as Error).message}`),
+        );
+      }
+    }
+    for (const id of [...this.scheduledCron.keys()]) if (!live.has(id)) this.deschedule(id);
   }
 
   // ---------- 查询 ----------
@@ -108,18 +159,22 @@ export class JobService implements OnModuleInit {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) throw new NotFoundException('任务不存在');
     this.assertCron(dto.cronExpr);
-    const updated = await this.prisma.job.update({
-      where: { id },
-      data: {
-        name: dto.name,
-        cronExpr: dto.cronExpr,
-        params: dto.params ? JSON.parse(dto.params) : undefined,
-        misfirePolicy: dto.misfirePolicy,
-        timeoutSec: dto.timeoutSec,
-        remark: dto.remark,
-        ...(dto.status ? { status: dto.status } : {}),
-      },
-    });
+    const updated = await withUniqueViolation(
+      () =>
+        this.prisma.job.update({
+          where: { id },
+          data: {
+            name: dto.name,
+            cronExpr: dto.cronExpr,
+            params: dto.params ? JSON.parse(dto.params) : undefined,
+            misfirePolicy: dto.misfirePolicy,
+            timeoutSec: dto.timeoutSec,
+            remark: dto.remark,
+            ...(dto.status ? { status: dto.status } : {}),
+          },
+        }),
+      `任务名「${dto.name}」已存在`,
+    );
     await this.reschedule(updated);
     return updated;
   }
@@ -161,16 +216,18 @@ export class JobService implements OnModuleInit {
   }
 
   private async schedule(id: number, cronExpr: string) {
-    this.deschedule(id);
-    // 注意：@nestjs/schedule v4 的 addCronJob(name, job) 只收 2 个参数，
-    // 回调必须通过 CronJob 实例传入（直接传第三参会被告警忽略，任务不会执行）
+    // 先构造 CronJob（cron 库语法校验）再动现有调度：表达式不被支持时抛错，旧调度保持不变
     const job = new CronJob(cronExpr, () => {
       runWithTraceId(this.appLogger.newTraceId(), () => {
         this.run(id, 'cron').catch((e) => this.logger.error(`任务 #${id} 调度执行异常: ${e.message}`));
       });
     });
+    this.deschedule(id);
+    // 注意：@nestjs/schedule v4 的 addCronJob(name, job) 只收 2 个参数，
+    // 回调必须通过 CronJob 实例传入（直接传第三参会被告警忽略，任务不会执行）
     this.scheduler.addCronJob(this.cronJobName(id), job);
     job.start();
+    this.scheduledCron.set(id, cronExpr);
     await this.prisma.job.update({ where: { id }, data: { nextRunAt: this.nextRunAt(cronExpr) } });
   }
 
@@ -179,6 +236,7 @@ export class JobService implements OnModuleInit {
     if (this.scheduler.doesExist('cron', name)) {
       this.scheduler.deleteCronJob(name);
     }
+    this.scheduledCron.delete(id);
   }
 
   /** 状态/cron 变更后重建调度 */
@@ -197,6 +255,11 @@ export class JobService implements OnModuleInit {
   async run(jobId: number, trigger: 'cron' | 'manual') {
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });
     if (!job) return { skipped: true, reason: '任务不存在' };
+    // 定时触发以库为准：任务已在其他实例上被暂停/改 cron，本实例的旧调度不应执行（对账前的窗口期兜底）
+    if (trigger === 'cron' && job.status !== 'ENABLED') {
+      this.deschedule(jobId);
+      return { skipped: true, reason: '任务已暂停' };
+    }
 
     const base = { event: 'run', jobId, jobName: job.name, handlerKey: job.handlerKey, trigger, params: job.params };
     const release = await this.lock.acquire(`job:run:${jobId}`, (job.timeoutSec + 60) * 1000);
@@ -291,9 +354,11 @@ export class JobService implements OnModuleInit {
     }
   }
 
+  /** 写库前校验：cron-parser（算下次执行时间）与 cron（实际调度）两个库都必须接受，避免库里存入调度不了的表达式 */
   private assertCron(expr: string) {
     try {
       cronParser.parseExpression(expr, { currentDate: new Date() });
+      new CronJob(expr, () => undefined); // 只构造不启动
     } catch {
       throw new BadRequestException(`cron 表达式不合法: ${expr}（标准 5 段：分 时 日 月 周）`);
     }

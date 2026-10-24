@@ -34,11 +34,20 @@
         <el-table-column label="大小" width="110">
           <template #default="{ row }">{{ formatSize(row.size) }}</template>
         </el-table-column>
-        <el-table-column prop="createdAt" label="上传时间" width="180" />
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="上传时间" width="180">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
-            <el-button v-permission="'system:file:download'" link type="primary" @click="onDownload(row)">下载</el-button>
-            <el-button link type="primary" @click="copyLink(row)">复制链接</el-button>
+            <el-button
+              v-permission="'system:file:download'"
+              link
+              type="primary"
+              :loading="downloadingId === row.id"
+              @click="onDownload(row)"
+            >
+              下载
+            </el-button>
             <el-popconfirm title="确认删除？" @confirm="onDelete(row)">
               <template #reference>
                 <el-button v-permission="'system:file:delete'" link type="danger">删除</el-button>
@@ -59,7 +68,8 @@ import { computed, onMounted, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { fileApi, type FileRow } from "@/api/file";
 import { usePagedList } from "@/composables/usePagedList";
-import { formatSize } from "@/utils/datetime";
+import { formatSize, formatTime } from "@/utils/datetime";
+import { saveBlob } from "@/utils/log";
 import { useAuthStore } from "@/stores/auth";
 
 const auth = useAuthStore();
@@ -103,22 +113,15 @@ function onDrop(e: DragEvent) {
   if (file) upload(file);
 }
 
-/** 下载：带上 accessToken 走接口鉴权 */
-function onDownload(row: FileRow) {
-  const token = localStorage.getItem("sb_access_token") || "";
-  const a = document.createElement("a");
-  a.href = `${fileApi.downloadUrl(row.id)}?token=${encodeURIComponent(token)}`;
-  a.download = row.name;
-  a.click();
-}
-
-async function copyLink(row: FileRow) {
-  const url = `${location.origin}${fileApi.downloadUrl(row.id)}`;
+/** 下载：带 Authorization 头请求 Blob 再保存（token 不进 URL） */
+const downloadingId = ref<number | null>(null);
+async function onDownload(row: FileRow) {
+  if (downloadingId.value) return;
+  downloadingId.value = row.id;
   try {
-    await navigator.clipboard.writeText(url);
-    ElMessage.success("链接已复制（下载仍需登录）");
-  } catch {
-    ElMessage.info(url);
+    saveBlob(await fileApi.download(row.id), row.name);
+  } finally {
+    downloadingId.value = null;
   }
 }
 
@@ -139,8 +142,6 @@ onMounted(load);
 </script>
 
 <style scoped>
-.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-.spacer { flex: 1; }
 .dropzone {
   border: 1px dashed #d9d9d9;
   border-radius: 8px;
@@ -154,5 +155,4 @@ onMounted(load);
 .dropzone:hover { border-color: #409eff; color: #409eff; }
 .dropzone.over { background: #ecf5ff; border-color: #409eff; }
 .file-icon { margin-right: 6px; }
-.pager { margin-top: 12px; justify-content: flex-end; }
 </style>

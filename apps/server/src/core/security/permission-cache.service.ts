@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { RedisClientService } from '../redis/redis.module';
 import type { AuthUser } from './jwt.strategy';
 
 /** 权限失效广播频道（LOCK_DRIVER=redis 时启用） */
@@ -44,17 +45,14 @@ export class PermissionCacheService implements OnModuleDestroy {
   private pub: Redis | null = null;
   private sub: Redis | null = null;
 
-  constructor(config: ConfigService) {
+  constructor(config: ConfigService, redisClients: RedisClientService) {
     this.ttlMs = Math.max(0, Number(config.get<string>('PERMISSION_CACHE_TTL') ?? 30)) * 1000;
-    this.broadcastEnabled = config.get<string>('LOCK_DRIVER') === 'redis';
+    this.broadcastEnabled = redisClients.enabled;
     if (this.broadcastEnabled) {
-      const url = config.get<string>('REDIS_URL') || 'redis://localhost:6379';
-      const opts = { lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null as any } as const;
-      this.pub = new Redis(url, opts);
-      this.sub = new Redis(url, opts);
-      this.pub.connect().catch(() => undefined);
+      this.pub = redisClients.createConnection();
+      this.sub = redisClients.createConnection();
       this.sub
-        .connect()
+        ?.connect()
         .then(() =>
           this.sub?.subscribe(CHANNEL).then(() =>
             // 收到广播：本地执行失效（不回播，避免循环）

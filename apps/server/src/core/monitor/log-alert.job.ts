@@ -28,7 +28,7 @@ export class LogAlertJob implements JobHandler {
     }
 
     const msg = `今日 ERROR 日志 ${count} 条，已超过阈值 ${threshold}，请及时排查（管理端「系统日志」按级别 ERROR 检索）`;
-    ctx.logger.warn({ event: 'log_alert', jobId: ctx.jobId, jobName: ctx.jobName, errors: count, threshold }, msg);
+    ctx.logger.warnFields({ event: 'log_alert', jobId: ctx.jobId, jobName: ctx.jobName, errors: count, threshold }, msg);
 
     const webhook = process.env.LOG_ALERT_WEBHOOK || '';
     if (webhook) {
@@ -38,9 +38,9 @@ export class LogAlertJob implements JobHandler {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: `[SystemBase 告警] ${msg}`, level: 'warn', count, threshold }),
         });
-        if (!res.ok) ctx.logger.warn({ event: 'log_alert_webhook', status: res.status }, `告警推送失败: HTTP ${res.status}`);
+        if (!res.ok) ctx.logger.warnFields({ event: 'log_alert_webhook', status: res.status }, `告警推送失败: HTTP ${res.status}`);
       } catch (e) {
-        ctx.logger.warn({ event: 'log_alert_webhook' }, `告警推送失败: ${(e as Error).message}`);
+        ctx.logger.warnFields({ event: 'log_alert_webhook' }, `告警推送失败: ${(e as Error).message}`);
       }
     }
 

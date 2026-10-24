@@ -54,7 +54,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">保存</el-button>
+        <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -74,6 +74,7 @@ const editingId = ref<number | null>(null);
 
 const emptyForm = { parentId: 0, name: "", type: "MENU", path: "", component: "", permission: "", icon: "", sort: 0, visible: true };
 const form = reactive({ ...emptyForm });
+const saving = ref(false);
 
 function typeName(t: string) {
   return { DIRECTORY: "目录", MENU: "页面", BUTTON: "按钮" }[t] || t;
@@ -111,6 +112,7 @@ function openEdit(row: MenuNode) {
 
 async function submit() {
   if (!form.name) return ElMessage.warning("请填写菜单名称");
+  if (saving.value) return;
   const data = {
     ...form,
     path: form.path || undefined,
@@ -118,11 +120,16 @@ async function submit() {
     permission: form.permission || undefined,
     icon: form.icon || undefined,
   };
-  if (editingId.value) await menuApi.update(editingId.value, data);
-  else await menuApi.create(data);
-  ElMessage.success("保存成功（重新登录或刷新后生效）");
-  dialogVisible.value = false;
-  load();
+  saving.value = true;
+  try {
+    if (editingId.value) await menuApi.update(editingId.value, data);
+    else await menuApi.create(data);
+    ElMessage.success("保存成功（重新登录或刷新后生效）");
+    dialogVisible.value = false;
+    load();
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function remove(row: MenuNode) {

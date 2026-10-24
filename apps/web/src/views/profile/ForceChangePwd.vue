@@ -46,21 +46,22 @@
 
 <script setup lang="ts">
 import { computed, reactive, ref } from "vue";
-import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { authApi } from "@/api/auth";
+import { PASSWORD_RULES, passwordProblem } from "@/utils/password";
 
 const auth = useAuthStore();
-const router = useRouter();
 const loading = ref(false);
 const form = reactive({ oldPassword: "", newPassword: "", confirm: "" });
 
-const MIN_LEN = Number(import.meta.env.VITE_PASSWORD_MIN_LENGTH || 8);
+const { minLength: MIN_LEN, requireComplexity } = PASSWORD_RULES;
+const twoClasses = (p: string) => [/[a-z]/, /[A-Z]/, /\d/].filter((re) => re.test(p)).length >= 2;
 
+// 逐条展示用；最终提交前再用与后端同一个校验函数整体判一次（含弱密码字典）
 const rules = computed(() => [
   { text: `至少 ${MIN_LEN} 位`, pass: form.newPassword.length >= MIN_LEN },
-  { text: "含字母与数字组合", pass: /[a-zA-Z]/.test(form.newPassword) && /\d/.test(form.newPassword) },
+  ...(requireComplexity ? [{ text: "含大小写字母与数字中的至少两类", pass: twoClasses(form.newPassword) }] : []),
   { text: "不包含用户名", pass: !!form.newPassword && !form.newPassword.toLowerCase().includes((auth.user?.username || "___").toLowerCase()) },
   { text: "两次输入一致", pass: !!form.newPassword && form.newPassword === form.confirm },
 ]);
@@ -72,6 +73,8 @@ async function submit() {
   if (form.newPassword !== form.confirm) return ElMessage.warning("两次输入的新密码不一致");
   const failed = rules.value.find((r) => !r.pass);
   if (failed) return ElMessage.warning(`密码不符合要求：${failed.text}`);
+  const problem = passwordProblem(form.newPassword, auth.user?.username);
+  if (problem) return ElMessage.warning(problem);
 
   loading.value = true;
   try {
@@ -87,8 +90,8 @@ async function submit() {
 }
 
 function onLogout() {
+  // logout 内部会整页跳到登录页；不要再 router.replace（此时 token 还没清，守卫会把它重定向回来）
   auth.logout();
-  router.replace("/login");
 }
 </script>
 

@@ -18,7 +18,7 @@ function setup(env: Record<string, string> = {}) {
       findMany: jest.fn().mockResolvedValue([]),
     },
   };
-  const logger = { warn: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
+  const logger = { warn: jest.fn(), warnFields: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
   const service = new FileService(
     prisma as unknown as PrismaService,
     new ConfigService({ UPLOAD_DIR: dir, ...env }),
@@ -49,10 +49,31 @@ describe('FileService.upload 校验', () => {
     await expect(service.upload(file({ mimetype: 'text/plain' }))).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('可执行扩展名一律拒绝（不只看 mime）', async () => {
+  it('可执行/可运行脚本的扩展名一律拒绝（含 html/svg，不只看 mime）', async () => {
     const { service } = setup({ UPLOAD_ALLOWED_MIME: '*' });
-    await expect(service.upload(file({ originalname: 'x.sh' }))).rejects.toBeInstanceOf(BadRequestException);
-    await expect(service.upload(file({ originalname: 'x.exe' }))).rejects.toBeInstanceOf(BadRequestException);
+    for (const name of ['x.sh', 'x.exe', 'x.html', 'x.svg', 'x.php']) {
+      await expect(service.upload(file({ originalname: name }))).rejects.toBeInstanceOf(BadRequestException);
+    }
+  });
+
+  it('不信任客户端 mime：.txt 声明成 image/png 也按扩展名判定为 text/plain', async () => {
+    const { service } = setup();
+    const row = await service.upload(file({ mimetype: 'image/png' }));
+    expect(row.mime).toBe('text/plain');
+  });
+
+  it('魔数校验：改扩展名伪装（文本内容命名为 .png）→ 400', async () => {
+    const { service } = setup();
+    await expect(service.upload(file({ originalname: 'fake.png', mimetype: 'image/png' }))).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+  });
+
+  it('魔数校验：真实 PNG 文件头通过', async () => {
+    const { service } = setup();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    const row = await service.upload(file({ originalname: 'ok.png', buffer: png, size: png.length }));
+    expect(row.mime).toBe('image/png');
   });
 
   it('空内容 → 400', async () => {
@@ -72,6 +93,32 @@ describe('FileService.upload 落盘', () => {
     expect(existsSync(abs)).toBe(true);
     expect(readFileSync(abs, 'utf8')).toBe('hello');
     expect(prisma.file.create).toHaveBeenCalled();
+  });
+
+  it('入库失败：已落盘的实体被清理，不留孤儿文件', async () => {
+    const { service, prisma } = setup();
+    let written = '';
+    prisma.file.create.mockImplementation(({ data }: any) => {
+      written = join(dir, data.path);
+      return Promise.reject(new Error('db down'));
+    });
+    await expect(service.upload(file())).rejects.toThrow('db down');
+    expect(existsSync(written)).toBe(false);
+  });
+});
+
+describe('FileService.purge（由 system.cleanup 定期调用）', () => {
+  it('物理删除软删超期的实体与记录，实体已不存在也删记录', async () => {
+    const { service, prisma } = setup();
+    const row = await service.upload(file({ originalname: 'old.txt' }));
+    const abs = join(dir, row.path);
+    prisma.file.findMany.mockResolvedValue([
+      { id: 1, path: row.path },
+      { id: 2, path: '202001/missing.txt' },
+    ]);
+    await expect(service.purge(7)).resolves.toBe(2);
+    expect(existsSync(abs)).toBe(false);
+    expect(prisma.file.delete).toHaveBeenCalledTimes(2);
   });
 });
 

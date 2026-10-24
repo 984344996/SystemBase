@@ -12,7 +12,7 @@ function setup() {
       delete: jest.fn(),
     },
   };
-  const logger = { warn: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
+  const logger = { warn: jest.fn(), warnFields: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
   const service = new ConfigService(prisma as unknown as PrismaService, logger);
   return { service, prisma, logger };
 }
@@ -76,7 +76,7 @@ describe('ConfigService 读取与类型转换', () => {
   it('非法值回退默认并告警（不阻断业务）', async () => {
     const { service, logger } = withRow({ value: 'maybe' });
     expect(await service.getBool('k', false)).toBe(false);
-    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.warnFields).toHaveBeenCalled();
 
     const n = withRow({ value: 'abc' });
     expect(await n.service.getNumber('k', 3)).toBe(3);

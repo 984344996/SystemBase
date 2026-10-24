@@ -14,7 +14,7 @@ function setup(opts: { handler: () => Promise<unknown>; lock?: boolean; timeoutS
     status: 'ENABLED',
     timeoutSec: opts.timeoutSec ?? 5,
   };
-  const prisma = { job: { findUnique: jest.fn().mockResolvedValue(job), update: jest.fn() } };
+  const prisma: any = { job: { findUnique: jest.fn().mockResolvedValue(job), update: jest.fn(), findMany: jest.fn() } };
   const logger = { job: jest.fn(), jobWarn: jest.fn(), jobError: jest.fn(), newTraceId: () => 'trace' };
   const release = jest.fn().mockResolvedValue(undefined);
   const lock = { acquire: jest.fn().mockResolvedValue(opts.lock === false ? null : release) };
@@ -26,7 +26,7 @@ function setup(opts: { handler: () => Promise<unknown>; lock?: boolean; timeoutS
     logger as any,
     lock as any,
     moduleRef as any,
-    {} as any,
+    { doesExist: () => false, deleteCronJob: jest.fn(), addCronJob: jest.fn() } as any,
     new ConfigService({}),
     logReader as any,
   );
@@ -90,6 +90,52 @@ describe('JobService.run（执行记录写日志文件）', () => {
     expect(res).toMatchObject({ skipped: true, status: 'SKIPPED_LOCK' });
     expect(handler.run).not.toHaveBeenCalled();
     expect(logger.jobWarn).toHaveBeenCalledWith(expect.objectContaining({ event: 'run', status: 'SKIPPED_LOCK' }), expect.any(String));
+  });
+
+  it('定时触发但库里已暂停（其他实例改的）→ 跳过，不抢锁不执行', async () => {
+    const { service, prisma, lock, handler } = setup({ handler: async () => 'x' });
+    prisma.job.findUnique.mockResolvedValue({ id: 1, status: 'PAUSED', handlerKey: KEY, cronExpr: '0 * * * *' });
+    const res = await service.run(1, 'cron');
+    expect(res).toMatchObject({ skipped: true });
+    expect(lock.acquire).not.toHaveBeenCalled();
+    expect(handler.run).not.toHaveBeenCalled();
+  });
+});
+
+describe('JobService.reconcile（多实例调度对账）', () => {
+  beforeAll(() => JOB_HANDLERS.set(KEY, class {}));
+  afterAll(() => JOB_HANDLERS.delete(KEY));
+
+  function withScheduler() {
+    const ctx = setup({ handler: async () => 'x' });
+    const registry = new Map<string, { stop: () => void }>();
+    (ctx.service as any).scheduler = {
+      addCronJob: (name: string, job: any) => registry.set(name, job),
+      doesExist: (_: string, name: string) => registry.has(name),
+      deleteCronJob: (name: string) => {
+        registry.get(name)?.stop();
+        registry.delete(name);
+      },
+    };
+    (ctx.prisma.job as any).findMany = jest.fn();
+    return { ...ctx, registry };
+  }
+
+  it('库里启用的任务注册调度；cron 变化时重建；暂停/删除的注销', async () => {
+    const { service, prisma, registry } = withScheduler();
+    prisma.job.findMany.mockResolvedValue([{ id: 1, status: 'ENABLED', cronExpr: '0 * * * *', handlerKey: KEY }]);
+    await service.reconcile();
+    expect(registry.has('job-1')).toBe(true);
+
+    const before = registry.get('job-1');
+    prisma.job.findMany.mockResolvedValue([{ id: 1, status: 'ENABLED', cronExpr: '*/5 * * * *', handlerKey: KEY }]);
+    await service.reconcile();
+    expect(registry.get('job-1')).not.toBe(before); // 已按新 cron 重建
+
+    prisma.job.findMany.mockResolvedValue([{ id: 1, status: 'PAUSED', cronExpr: '*/5 * * * *', handlerKey: KEY }]);
+    await service.reconcile();
+    expect(registry.has('job-1')).toBe(false);
+    registry.forEach((j) => j.stop());
   });
 });
 

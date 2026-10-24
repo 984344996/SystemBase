@@ -16,22 +16,24 @@
         <el-table-column prop="label" label="名称" min-width="150" />
         <el-table-column label="值" min-width="240">
           <template #default="{ row }">
-            <!-- 行内编辑：布尔用开关，其余用输入框，失焦/切换即保存 -->
+            <!-- 行内编辑：布尔用开关，其余用输入框，失焦/回车即保存。
+                 输入框绑定草稿（drafts），失焦时与行上的已保存值比较，变了才提交 -->
             <el-switch
               v-if="row.type === 'BOOL'"
               :model-value="row.value === 'true' || row.value === '1'"
               active-text="开"
               inactive-text="关"
               :disabled="!canEdit"
-              @change="(v: boolean) => saveInline(row, String(v))"
+              @change="(v: string | number | boolean) => saveInline(row, String(v))"
             />
             <el-input
               v-else
-              v-model="row.value"
+              :model-value="drafts[row.key] ?? row.value"
               size="small"
               :disabled="!canEdit"
-              @blur="saveInline(row, row.value)"
-              @keyup.enter="saveInline(row, row.value)"
+              @update:model-value="(v: string) => (drafts[row.key] = v)"
+              @blur="commitDraft(row)"
+              @keyup.enter="commitDraft(row)"
             />
           </template>
         </el-table-column>
@@ -109,6 +111,9 @@ const keyword = ref("");
 const group = ref("");
 const form = reactive<Partial<ConfigRow>>({});
 const isEdit = ref(false);
+/** 行内编辑草稿：key → 输入中的值（未提交前不改 row.value） */
+const drafts = reactive<Record<string, string>>({});
+const savingKeys = new Set<string>();
 
 const canEdit = computed(() => auth.hasPerm("system:config:update"));
 const groups = computed(() => [...new Set(rows.value.map((r) => r.group))]);
@@ -122,40 +127,57 @@ async function load() {
   loading.value = true;
   try {
     rows.value = await configApi.list({ keyword: keyword.value || undefined, group: group.value || undefined });
+    for (const k of Object.keys(drafts)) delete drafts[k];
   } finally {
     loading.value = false;
   }
 }
 
+function commitDraft(row: ConfigRow) {
+  const draft = drafts[row.key];
+  if (draft === undefined) return;
+  delete drafts[row.key];
+  saveInline(row, draft);
+}
+
+/** row.value 始终是「已保存」的值：成功后才更新，失败保持原值 */
 async function saveInline(row: ConfigRow, value: string) {
-  if (row.value === value) return;
-  const old = row.value;
-  row.value = value;
+  if (row.value === value || savingKeys.has(row.key)) return;
+  savingKeys.add(row.key);
   try {
     await configApi.update(row.key, { value });
+    row.value = value;
     ElMessage.success("已保存（即时生效）");
-  } catch {
-    row.value = old;
+  } finally {
+    savingKeys.delete(row.key);
   }
 }
 
 function openCreate() {
   isEdit.value = false;
-  Object.assign(form, { key: "", value: "", type: "STRING", group: "base", label: "", remark: "" });
+  replaceForm({ key: "", value: "", type: "STRING", group: "base", label: "", remark: "" });
   dialog.value = true;
 }
 
 function openEdit(row: ConfigRow) {
   isEdit.value = true;
-  Object.assign(form, row);
+  replaceForm({ key: row.key, value: row.value, type: row.type, group: row.group, label: row.label, remark: row.remark ?? "" });
   dialog.value = true;
+}
+
+/** 整体替换表单（Object.assign 只覆盖不清空，会残留上一次的 id/createdAt 等字段） */
+function replaceForm(next: Partial<ConfigRow>) {
+  for (const k of Object.keys(form)) delete (form as Record<string, unknown>)[k];
+  Object.assign(form, next);
 }
 
 async function submit() {
   saving.value = true;
   try {
-    if (isEdit.value && form.key) await configApi.update(form.key, form);
-    else await configApi.create(form);
+    const { key, value, type, group: g, label, remark } = form;
+    // 只提交 DTO 白名单内的字段（多余字段会被后端 forbidNonWhitelisted 拒绝）
+    if (isEdit.value && key) await configApi.update(key, { value, type, group: g, label, remark });
+    else await configApi.create({ key, value, type, group: g, label, remark });
     ElMessage.success("保存成功");
     dialog.value = false;
     load();
@@ -172,8 +194,3 @@ async function onDelete(row: ConfigRow) {
 
 onMounted(load);
 </script>
-
-<style scoped>
-.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-.spacer { flex: 1; }
-</style>

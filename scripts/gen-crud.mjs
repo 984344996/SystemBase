@@ -288,7 +288,7 @@ describe('${Pascal}Service', () => {
 });
 `;
 
-const webApi = `import request from './request';
+const webApi = `import request from '@/utils/request';
 import type { PageResult } from '@sb/shared';
 
 export interface ${Pascal}Item {
@@ -300,9 +300,10 @@ export interface ${Pascal}Item {
   createdAt: string;
 }
 
+/** 分页字段必填：与 usePagedList 的查询约束对齐 */
 export interface ${Pascal}Query {
-  page?: number;
-  pageSize?: number;
+  page: number;
+  pageSize: number;
   keyword?: string;
   status?: string;
 }
@@ -321,12 +322,12 @@ const vuePage = `<template>
   <div class="page">
     <el-card shadow="never">
       <div class="toolbar">
-        <el-input v-model="query.keyword" placeholder="名称/编码" clearable style="width: 200px" @keyup.enter="load" />
+        <el-input v-model="query.keyword" placeholder="名称/编码" clearable style="width: 200px" @keyup.enter="search" />
         <el-select v-model="query.status" placeholder="状态" clearable style="width: 120px">
           <el-option label="启用" value="ENABLED" />
           <el-option label="停用" value="DISABLED" />
         </el-select>
-        <el-button type="primary" @click="load">查询</el-button>
+        <el-button type="primary" @click="search">查询</el-button>
         <el-button @click="reset">重置</el-button>
         <div class="spacer" />
         <el-button v-permission="'${perm}:create'" type="primary" @click="openCreate">新增</el-button>
@@ -338,9 +339,7 @@ const vuePage = `<template>
         <el-table-column prop="code" label="编码" min-width="140" />
         <el-table-column prop="status" label="状态" width="90">
           <template #default="{ row }">
-            <el-tag :type="row.status === 'ENABLED' ? 'success' : 'info'">
-              {{ row.status === 'ENABLED' ? '启用' : '停用' }}
-            </el-tag>
+            <StatusTag :status="row.status" />
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="备注" min-width="180" show-overflow-tooltip />
@@ -357,14 +356,7 @@ const vuePage = `<template>
         <template #empty>暂无数据</template>
       </el-table>
 
-      <el-pagination
-        class="pager"
-        v-model:current-page="query.page"
-        v-model:page-size="query.pageSize"
-        :total="total"
-        layout="total, sizes, prev, pager, next"
-        @change="load"
-      />
+      <TablePager :query="query" :total="total" :load="load" />
     </el-card>
 
     <el-drawer v-model="dialog" :title="form.id ? '编辑' : '新增'" size="480px">
@@ -388,32 +380,24 @@ const vuePage = `<template>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { reactive, ref } from 'vue';
+import { onMounted } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ${camel}Api, type ${Pascal}Item, type ${Pascal}Query } from '@/api/${name}';
+import { usePagedList } from '@/composables/usePagedList';
 
-const rows = ref<${Pascal}Item[]>([]);
-const total = ref(0);
-const loading = ref(false);
+// 分页/查询/加载统一走 usePagedList（查询自动回到第 1 页）
+const { query, rows, total, loading, load, search } = usePagedList<${Pascal}Query, ${Pascal}Item>(
+  { page: 1, pageSize: 10, keyword: '', status: '' },
+  (q) => ${camel}Api.list(q),
+);
 const saving = ref(false);
 const dialog = ref(false);
-const query = reactive<${Pascal}Query>({ page: 1, pageSize: 10, keyword: '', status: '' });
 const form = reactive<Partial<${Pascal}Item>>({});
 
-async function load() {
-  loading.value = true;
-  try {
-    const res = await ${camel}Api.list(query);
-    rows.value = res.list;
-    total.value = res.total;
-  } finally {
-    loading.value = false;
-  }
-}
-
 function reset() {
-  Object.assign(query, { page: 1, pageSize: 10, keyword: '', status: '' });
-  load();
+  Object.assign(query, { keyword: '', status: '' });
+  search();
 }
 
 function openCreate() {
@@ -447,12 +431,6 @@ async function onDelete(row: ${Pascal}Item) {
 
 onMounted(load);
 </script>
-
-<style scoped>
-.toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
-.spacer { flex: 1; }
-.pager { margin-top: 12px; justify-content: flex-end; }
-</style>
 `;
 
 // ---------- 落盘 ----------

@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsIn, IsISO8601, IsOptional, IsString, MaxLength, ValidateIf } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { PaginationDto } from '../../core/pagination/pagination.dto';
 
@@ -37,12 +37,12 @@ export class CreateNoticeDto {
   @IsOptional() @IsIn(['DRAFT', 'PUBLISHED'])
   status?: string;
 
-  @ApiPropertyOptional({ description: '生效开始时间（ISO 字符串）' })
-  @IsOptional() @IsString()
+  @ApiPropertyOptional({ description: '生效开始时间（ISO 8601）' })
+  @IsOptional() @IsISO8601({}, { message: 'startAt 需为 ISO 8601 时间' })
   startAt?: string;
 
-  @ApiPropertyOptional({ description: '生效结束时间（ISO 字符串）' })
-  @IsOptional() @IsString()
+  @ApiPropertyOptional({ description: '生效结束时间（ISO 8601）' })
+  @IsOptional() @IsISO8601({}, { message: 'endAt 需为 ISO 8601 时间' })
   endAt?: string;
 }
 
@@ -67,11 +67,11 @@ export class UpdateNoticeDto {
   @IsOptional() @IsIn(['DRAFT', 'PUBLISHED'])
   status?: string;
 
-  @ApiPropertyOptional()
-  @IsOptional() @IsString()
-  startAt?: string;
+  @ApiPropertyOptional({ description: '生效开始时间（ISO 8601；传 null 清空）', nullable: true })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsISO8601({}, { message: 'startAt 需为 ISO 8601 时间' })
+  startAt?: string | null;
 
-  @ApiPropertyOptional()
-  @IsOptional() @IsString()
-  endAt?: string;
+  @ApiPropertyOptional({ description: '生效结束时间（ISO 8601；传 null 清空）', nullable: true })
+  @ValidateIf((_, v) => v !== null && v !== undefined) @IsISO8601({}, { message: 'endAt 需为 ISO 8601 时间' })
+  endAt?: string | null;
 }

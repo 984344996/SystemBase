@@ -2,7 +2,7 @@ import { HttpException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { LoginGuardService } from './login-guard.service';
 
-const logger = { warn: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
+const logger = { warn: jest.fn(), warnFields: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
 
 function setup(env: Record<string, string> = {}) {
   const guard = new LoginGuardService(new ConfigService(env), logger);

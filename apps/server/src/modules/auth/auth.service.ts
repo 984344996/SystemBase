@@ -1,6 +1,5 @@
 import {
   BadRequestException,
-  HttpException,
   HttpStatus,
   Injectable,
   UnauthorizedException,
@@ -13,9 +12,11 @@ import { Request } from 'express';
 import { Menu } from '@prisma/client';
 import { buildTree } from '@sb/shared';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { BusinessException, BizCode } from '../../core/filter/business.exception';
 import { AppLogger } from '../../core/logger/logger.service';
 import { AuthUser } from '../../core/security/jwt.strategy';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
+import { isSuperAdmin } from '../../core/security/permissions.guard';
 import { LoginGuardService } from '../../core/security/login-guard.service';
 import { checkPasswordStrength, isPasswordExpired, readPasswordPolicy } from '../../core/security/password-policy';
 import { LoginDto } from './dto/login.dto';
@@ -37,14 +38,17 @@ export function parseDuration(s: string): number {
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 
+/** 刚被轮换的 refreshToken 在该窗口内再次出现，视为并发刷新（多标签页/重试）而非泄露重放 */
+export const REFRESH_REUSE_GRACE_MS = 30_000;
+
 /**
  * 密码可用性校验（策略 + 不得与旧密码相同）：不通过直接抛 400，错误信息可直接展示给用户。
- * 管理员重置与用户自助改密共用同一套规则。
+ * 管理员重置与用户自助改密共用同一套规则。bcrypt 比较用异步版本，不阻塞事件循环。
  */
-export function assertPasswordUsable(newPassword: string, username: string, oldHash?: string): void {
+export async function assertPasswordUsable(newPassword: string, username: string, oldHash?: string): Promise<void> {
   const problems = checkPasswordStrength(newPassword, username, readPasswordPolicy());
   if (problems.length) throw new BadRequestException(problems.join('；'));
-  if (oldHash && bcrypt.compareSync(newPassword, oldHash)) {
+  if (oldHash && (await bcrypt.compare(newPassword, oldHash))) {
     throw new BadRequestException('新密码不能与当前密码相同');
   }
 }
@@ -75,9 +79,11 @@ export class AuthService {
     if (this.guard.captchaRequired(key)) {
       const needCaptcha = !dto.captchaId || !this.guard.verifyCaptcha(dto.captchaId, dto.captchaCode || '');
       if (needCaptcha) {
-        throw new HttpException(
-          { needCaptcha: true, message: '请输入验证码' },
+        throw new BusinessException(
+          BizCode.NEED_CAPTCHA,
+          '请输入验证码',
           HttpStatus.PRECONDITION_FAILED,
+          { needCaptcha: true },
         );
       }
     }
@@ -113,6 +119,14 @@ export class AuthService {
   }
 
   // ---------- 刷新令牌（轮换：旧 refreshToken 用后即废） ----------
+  /**
+   * 并发安全：
+   * - 作废旧 token 用条件更新 `updateMany({ id, revokedAt: null })`，只有一个请求能抢到（count===1），
+   *   作废与签发新 token 在同一事务内，签发失败时旧 token 不会被白白作废
+   * - 宽限期：刚被轮换（REFRESH_REUSE_GRACE_MS 内）的 token 再次出现，视为多标签页/网络重试的并发刷新，
+   *   返回 401 让客户端改用最新 token，而不是当作「token 泄露」吊销全部登录态
+   * - 超过宽限期仍被使用才判定为重放（疑似泄露），吊销该用户全部 refreshToken
+   */
   async refresh(refreshToken: string, req: Request) {
     const record = await this.prisma.refreshToken.findUnique({
       where: { tokenHash: sha256(refreshToken) },
@@ -120,14 +134,8 @@ export class AuthService {
     });
     if (!record) throw new UnauthorizedException('登录已过期，请重新登录');
 
-    // 重放检测：已作废的 refreshToken 再次出现（疑似泄露），吊销该用户全部登录态，强制全端重登
     if (record.revokedAt) {
-      await this.revokeAllRefreshTokens(record.userId);
-      this.logger.audit(
-        { event: 'token_replay', userId: record.userId, username: record.user.username, ip: req.ip, ua: this.ua(req) },
-        `已作废的 refreshToken 被重复使用，疑似泄露，已吊销用户 ${record.user.username} 全部登录态`,
-        'warn',
-      );
+      this.handleRevokedReuse(record, req);
       throw new UnauthorizedException('登录已过期，请重新登录');
     }
 
@@ -137,9 +145,31 @@ export class AuthService {
       record.user.status === 'ENABLED';
     if (!valid) throw new UnauthorizedException('登录已过期，请重新登录');
 
-    // 轮换：作废旧 token 再签发新对
-    await this.prisma.refreshToken.update({ where: { id: record.id }, data: { revokedAt: new Date() } });
-    return this.issueTokens(record.user.id, record.user.username, record.user.name, req);
+    const pair = await this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.refreshToken.updateMany({
+        where: { id: record.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      if (claimed.count !== 1) return null; // 并发请求已抢先轮换
+      return this.issueTokens(record.user.id, record.user.username, record.user.name, req, tx);
+    });
+    if (!pair) throw new UnauthorizedException('登录已过期，请重新登录');
+    return pair;
+  }
+
+  /** 已作废 token 再次出现：宽限期内视为并发刷新，否则判定为重放并吊销全部登录态 */
+  private handleRevokedReuse(
+    record: { userId: number; revokedAt: Date | null; user: { username: string } },
+    req: Request,
+  ): void {
+    const sinceRevoked = Date.now() - (record.revokedAt?.getTime() ?? 0);
+    if (sinceRevoked <= REFRESH_REUSE_GRACE_MS) return;
+    void this.revokeAllRefreshTokens(record.userId);
+    this.logger.audit(
+      { event: 'token_replay', userId: record.userId, username: record.user.username, ip: req.ip, ua: this.ua(req) },
+      `已作废的 refreshToken 被重复使用，疑似泄露，已吊销用户 ${record.user.username} 全部登录态`,
+      'warn',
+    );
   }
 
   // ---------- 登出 ----------
@@ -166,7 +196,7 @@ export class AuthService {
       email: detail.email,
       roles: detail.roles.map((r) => r.role.name),
       roleCodes: detail.roles.map((r) => r.role.code),
-      permissions: user.roles.includes('SUPER_ADMIN') ? ['*'] : user.permissions,
+      permissions: isSuperAdmin(user) ? ['*'] : user.permissions,
       // 前端据此决定是否拦截到强制改密页（刷新页面后依然有效）
       mustChangePassword: detail.mustChangePassword,
       passwordExpired: isPasswordExpired(detail.pwdUpdatedAt),
@@ -187,19 +217,18 @@ export class AuthService {
 
   // ---------- 当前用户可见菜单（前端动态路由数据源） ----------
   async myMenus(user: AuthUser) {
-    const isSuper = user.roles.includes('SUPER_ADMIN');
     const menus = await this.prisma.menu.findMany({
       where: { status: 'ENABLED', visible: true, type: { in: ['DIRECTORY', 'MENU'] } },
       orderBy: [{ sort: 'asc' }, { id: 'asc' }],
     });
     let visible = menus;
-    if (!isSuper) {
-      const roleIds = await this.prisma.userRole.findMany({ where: { userId: user.id }, select: { roleId: true } });
-      const menuIds = await this.prisma.roleMenu.findMany({
-        where: { roleId: { in: roleIds.map((r) => r.roleId) } },
+    if (!isSuperAdmin(user)) {
+      // 只算启用中的角色（与 JwtStrategy 计算权限的口径一致，否则禁用角色的菜单仍显示、点进去 403）
+      const granted = await this.prisma.roleMenu.findMany({
+        where: { role: { status: 'ENABLED', users: { some: { userId: user.id } } } },
         select: { menuId: true },
       });
-      const allowed = new Set(menuIds.map((m) => m.menuId));
+      const allowed = new Set(granted.map((m) => m.menuId));
       visible = menus.filter((m) => allowed.has(m.id));
     }
     return this.buildTree(visible);
@@ -211,28 +240,36 @@ export class AuthService {
     if (!detail || !(await bcrypt.compare(oldPassword, detail.password))) {
       throw new BadRequestException('原密码不正确');
     }
-    assertPasswordUsable(newPassword, detail.username, detail.password);
+    await assertPasswordUsable(newPassword, detail.username, detail.password);
+    const hash = await bcrypt.hash(newPassword, 10);
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: user.id },
         data: {
-          password: await bcrypt.hash(newPassword, 10),
+          password: hash,
           mustChangePassword: false, // 已自行改密，解除强制改密
-          pwdUpdatedAt: new Date(),
+          pwdUpdatedAt: new Date(), // 早于此时间签发的 accessToken 立即失效（见 JwtStrategy）
         },
       }),
       // 全端踢下线：吊销所有 refreshToken
       this.revokeAllRefreshTokens(user.id),
     ]);
+    this.permCache.invalidateUser(user.id);
     return { success: true };
   }
 
   // ---------- 内部 ----------
-  private async issueTokens(userId: number, username: string, name: string, req: Request): Promise<TokenPair> {
+  private async issueTokens(
+    userId: number,
+    username: string,
+    name: string,
+    req: Request,
+    db: Pick<PrismaService, 'refreshToken'> = this.prisma,
+  ): Promise<TokenPair> {
     const accessToken = await this.jwt.signAsync({ sub: userId, username, name });
     const refreshToken = randomBytes(48).toString('hex');
     const ttl = parseDuration(this.config.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d');
-    await this.prisma.refreshToken.create({
+    await db.refreshToken.create({
       data: {
         userId,
         tokenHash: sha256(refreshToken),

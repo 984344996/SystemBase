@@ -14,9 +14,10 @@
 ## 接口规范
 
 - 成功：`{ code: 0, data, message: 'ok', traceId }`（TransformInterceptor 自动包裹，业务只 return 数据）
-- 失败：抛 HttpException，过滤器统一 `{ code, data: null, message, traceId }`
+- 失败：抛 HttpException，过滤器统一 `{ code, data, message, traceId }`；需要前端精确区分的错误用 `BusinessException`（业务错误码，见 `core/filter/business.exception.ts` 的 `BizCode`）
 - 列表：必须继承 `PaginationDto` 并用 `paginate()`，响应 `{ list, total, page, pageSize }`
 - 写操作：DTO class + `@RequirePermissions` + `@OperateLog` 三件套
+- 路由 / 权限码 / 模块清单文档自动生成：改完跑 `pnpm docs:gen`（CI 会检测漂移）
 
 ## Git 约定
 
@@ -25,8 +26,8 @@ feat: 新功能        fix: 修复          refactor: 重构
 docs: 文档          chore: 构建/工具    perf: 性能
 ```
 
-分支：`main`（可发布）← `dev`（集成）← `feat/xxx`、`fix/xxx`。
-提交前：`pnpm lint && pnpm test` 必须通过。改了 `schema.prisma` 必须同时提交迁移（`make db-migrate name=xxx`），否则 `migrate deploy` 后表结构与代码不符。
+分支：单主干 `master`（预发验证后再正式发布：`./sb.sh remote-pre deploy` → `./sb.sh remote-release deploy`）。
+提交前：`pnpm lint && pnpm test` 必须通过（或 `./sb.sh setup-hooks` 启用 pre-commit 卡口）。改了 `schema.prisma` 必须同时提交迁移（`make db-migrate name=xxx`），否则 `migrate deploy` 后表结构与代码不符。
 
 ## 代码风格
 

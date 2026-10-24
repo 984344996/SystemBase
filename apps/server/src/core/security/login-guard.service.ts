@@ -70,7 +70,7 @@ export class LoginGuardService {
     rec.count += 1;
     if (this.lockCount > 0 && rec.count >= this.lockCount) {
       rec.lockedUntil = now + this.lockMinutes * 60_000;
-      this.logger.warn(
+      this.logger.warnFields(
         { event: 'login_locked', key },
         `登录失败 ${rec.count} 次，锁定 ${this.lockMinutes} 分钟`,
       );
@@ -103,7 +103,7 @@ export class LoginGuardService {
     } catch {
       if (!this.captchaWarned) {
         this.captchaWarned = true;
-        this.logger.warn({}, 'LOGIN_CAPTCHA 已开启但未安装 svg-captcha，验证码功能不生效（pnpm --filter @sb/server add svg-captcha）');
+        this.logger.warnFields({}, 'LOGIN_CAPTCHA 已开启但未安装 svg-captcha，验证码功能不生效（pnpm --filter @sb/server add svg-captcha）');
       }
       return null;
     }

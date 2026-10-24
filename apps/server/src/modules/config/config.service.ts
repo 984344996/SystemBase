@@ -86,7 +86,7 @@ export class ConfigService {
     if (v === '') return fallback;
     const b = this.toBool(v);
     if (b === undefined) {
-      this.logger.warn({ event: 'config_invalid', key, value: v }, `系统参数 ${key} 不是合法布尔值，使用默认值`);
+      this.logger.warnFields({ event: 'config_invalid', key, value: v }, `系统参数 ${key} 不是合法布尔值，使用默认值`);
       return fallback;
     }
     return b;
@@ -98,7 +98,7 @@ export class ConfigService {
     if (v === '') return fallback;
     const n = Number(v);
     if (!Number.isFinite(n)) {
-      this.logger.warn({ event: 'config_invalid', key, value: v }, `系统参数 ${key} 不是合法数值，使用默认值`);
+      this.logger.warnFields({ event: 'config_invalid', key, value: v }, `系统参数 ${key} 不是合法数值，使用默认值`);
       return fallback;
     }
     return n;
@@ -111,7 +111,7 @@ export class ConfigService {
     try {
       return JSON.parse(v) as T;
     } catch {
-      this.logger.warn({ event: 'config_invalid', key }, `系统参数 ${key} 不是合法 JSON，使用默认值`);
+      this.logger.warnFields({ event: 'config_invalid', key }, `系统参数 ${key} 不是合法 JSON，使用默认值`);
       return fallback;
     }
   }

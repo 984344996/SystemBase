@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+### 设计审查修复（docs/review-2026-10-24.md）
+
+**⚠️ 行为变更（升级必读）**
+- 权限守卫改为**默认拒绝**：接口必须声明 `@RequirePermissions` / `@LoginOnly` / `@Public` 之一，否则 403。自定义业务模块里「登录即可」的接口需补 `@LoginOnly()`
+- `TRUST_PROXY` 默认值 `1` → `false`：经 Nginx 部署须在 env 显式配置 `TRUST_PROXY=1`（`remote.env.example` 已写好，现有 remote-pre/release 不受影响）
+- `JWT_SECRET` 仅在 `NODE_ENV=development|test` 时允许缺省；未设置 `NODE_ENV` 也要求配置密钥
+- `GET /api/roles/all` 需要 `system:user:create|update` 或 `system:role:list` 权限（原来所有登录用户可见）
+- 新建用户的初始密码同样执行密码策略（原来只校验长度 ≥ 6）
+
+**高危**
+- 修复：文件下载不可用——前端 `?token=` 传参而后端只认 Authorization 头；改为 axios 带头请求 Blob 下载（token 不再进访问日志），移除无法工作的「复制链接」
+- 修复：越权提权——新增 `PrivilegeGuardService`：只有超管能授予/摘除超管角色、管理/重置超管账号；非超管分配的角色、授权的菜单不能超出自身权限；不能修改自己所属角色的授权
+- 修复：编辑角色时残留上一个角色的勾选（多授权）、「有页面无按钮」的菜单编辑一次即丢失——菜单树改为 `check-strictly` + 显式父子联动 + `setCheckedKeys` 整体替换
+- 修复：refreshToken 轮换竞态——条件更新（`revokedAt: null`）+ 与签发新 token 同一事务；30s 宽限期内的重复使用视为并发刷新而非重放，不再误吊销全部登录态；前端用 Web Locks 跨标签页串行刷新，刷新前比对 token，多标签页不再互相踢下线
+- 修复：下载文件流读失败无错误处理会打挂进程——改用 `pipeline` 并捕获；Content-Length 以磁盘实际大小为准；ETag 实现 304 协商
+- 修复：上传无大小限制整文件先进内存——multer `limits.fileSize`；同步写盘改异步；入库失败清理孤儿文件
+- 修复：系统参数行内编辑永远不保存（v-model 改值后比较恒相等）；编辑弹窗提交整行被白名单拒绝
+- 修复：漏配 `NODE_ENV` 时使用源码公开的默认 JWT 密钥
+
+**中危**
+- 修复：改密/重置密码后旧 accessToken 仍有效——JWT 校验比较 `iat` 与 `pwdUpdatedAt`
+- 修复：强制改密只在前端拦截——服务端 `mustChangePassword` 时只放行 `@AllowPendingPassword` 接口（业务码 40301）
+- 修复：后端重启/断网时在线用户被批量踢回登录页——刷新请求加 10s 超时，只有 401/403 才清登录态；路由守卫非 401 错误弹「重试」而非登出
+- 修复：登出先触发一次 token 轮换再用旧 token 登出——登出跳过 401 刷新、先清本地再通知后端
+- 新增：跨标签页登录态同步（其他标签页登出/换账号时本页刷新）
+- 修复：`sort` 参数可按任意字段排序（含 password）、未知字段触发 500——分页增加排序字段白名单
+- 修复：`TRUST_PROXY` 默认信任代理头，服务直连时 `X-Forwarded-For` 可伪造
+- 修复：前端日志上报接口可刷满磁盘——单日字节预算（`CLIENT_LOG_DAILY_MAX_BYTES`，默认 50MB）+ 10s 去重；Public 接口可选解析 token 记录 userId
+- 修复：审计日志脱敏不完整——键名改不区分大小写的正则（覆盖 confirmPassword/captchaCode/secret/apiKey 等），超深度截断；系统参数的 value 不再明文入审计日志（`@OperateLog({ omitParams })`）
+- 修复：`/auth/menus` 不过滤已禁用角色（菜单显示但点进去 403）
+- 修复：上传类型只信客户端 mime——扩展名白名单 + 文件头魔数校验，服务端判定 mime；拒绝 html/svg 等可执行脚本类型
+- 修复：软删除文件永不清理——`system.cleanup` 每小时调用 `FileService.purge()` 回收 7 天前删除的实体
+- 修复：多实例下暂停/改 cron 的任务在其他实例照跑——`run()` 以库为准检查状态；每 60s 从库对账调度（`JOB_RECONCILE_SECONDS`）
+- 修复：启动时同步补跑阻塞端口监听；库里一条非法 cron 导致应用启动失败；cron 写库前用调度库同时校验
+- 修复：写操作重复提交（用户/角色/菜单/任务/个人资料/修改密码），任务「立即执行」连点重复执行
+- 修复：用户/任务/字典/公告编辑提交整行数据被白名单校验拒绝（400）；公告有效期清空后无法保存
+- 修复：弹框取消与接口错误被当成前端异常上报，前端日志全是噪音
+
+**低危**
+- 修复：多处 `logger.warn(fields, msg)` 参数顺序错误导致日志 msg 为空
+- 修复：「最后一个超管」保护检查在事务外（两人同时互相禁用都能成功）——事务内 `FOR UPDATE`
+- 修复：角色用户数统计含已删除用户导致角色删不掉；删除用户名可复用提示
+- 新增：`RefreshToken(expiresAt/revokedAt)`、`notice(status, top, createdAt)` 索引（迁移 `20261024050344_add_token_notice_indexes`）
+- 修复：访问日志记录完整 query；公告日期字段改 ISO 8601 校验
+- 修复：`bcrypt.compareSync` 阻塞事件循环；前端各处密码规则不一致（6 位/8 位）——规则移入 `@sb/shared` 前后端共用
+- 修复：验证码 SVG 改用 `<img>` 渲染（不执行脚本）；公告未读数 60s 轮询（页面隐藏时暂停）；chunk 加载失败刷新标记不清除；字典保存后选中项跳回第一个、快速切换显示错乱；`saveBlob` 立即 revoke 导致部分浏览器下载被取消
+- 测试：单测 132 → 162（新增权限守卫默认拒绝、提权、脱敏、刷新并发、文件魔数、任务对账等）；E2E 9 → 16（`test/security.e2e-spec.ts` 对真实库回归提权/改密失效/强制改密/refresh 并发/默认拒绝/上传下载/排序白名单）；覆盖率 40% → 45%
+
+### 文档现代化与自动化
+
+- 新增：**文档自动生成** `pnpm docs:gen`（`scripts/gen-docs.mjs`）：从源码提取事实生成 `docs/generated/module-map.md`（全部模块的路由/权限码/服务方法，86 行路由表）与 `permissions.md`（seed 定义 × 前端使用的权限码对照，孤儿码/未定义码检测——当前 28 个权限码零漂移）；生成内容稳定幂等（无时间戳、内容不变不写入），CI 用 `git diff` 检测漂移（改了源码忘重新生成会红灯）
+- 新增：**文档地图** `docs/README.md`：按「快速上手/开发约定/部署运维/参考（自动生成）/规划」组织全部 13 篇文档，标注每篇维护方式
+- 修复：`docs/conventions.md` 虚构的分支模型（写着 main←dev←feat，实际单主干 master）、缺失的 BusinessException 与 docs:gen 约定
+- 修复：`docs/module-guide.md` 未优先推荐 gen-crud 生成器、函数式权限判断的使用时机描述
+- 可选后续：VitePress 文档站点、Typedoc 生成 core 层 API 参考（未做，等站点需求明确再上，避免过度工程）
+
+### 质量保障（P0）
+
+- 新增：**E2E 主链路冒烟测试**（`test/app.e2e-spec.ts`，9 个用例：健康检查/登录/认证/权限拒绝/CRUD/白名单校验/错误码结构），独立数据库 `system_base_e2e`（global-setup 自动建库+迁移+种子），`pnpm --filter @sb/server test:e2e` 运行——改 core 层（guard/filter/interceptor）后的回归底线
+- 新增：**CI 工作流** `.github/workflows/ci.yml`（lint → 单测含覆盖率门 → 全量构建 → E2E with MySQL service），推送后自动验证，与本地 pre-commit 卡口互补
+- 新增：**覆盖率防倒退门**（jest collectCoverage + coverageThreshold，当前基线约 40%，阈值设在 35/35/30/35，随覆盖提升逐步上调）
+- 修复：**gen-crud 生成器模板对齐三件套**（`usePagedList`/`TablePager`/`StatusTag`/`v-permission`），并修复 api 模板两个 bug（request 导入路径错误、分页字段可选导致类型不满足 usePagedList 约束）——新业务代码不再产出旧范式
+
+### 架构（P1）
+
+- 新增：**业务错误码体系**（`BusinessException` + `BizCode` 枚举，`core/filter/business.exception.ts`）：响应 `code` 与 HTTP 状态解耦、`data` 透传；唯一约束冲突升级为 `40901`（HTTP 409）、`needCaptcha` 不再靠 message hack；存量 `BadRequestException` 保持兼容，渐进迁移
+- 重构：**Redis 连接统一**为全局 `RedisModule`（`core/redis/redis.module.ts`），LockService 与 PermissionCacheService 不再各自 `new Redis`；主连接统一降级判断，pub/sub 走 `createConnection()`
+
+### 文档与生态（F）
+
+- 补齐：**Swagger 注解全量覆盖**（user/role/menu/auth/job/monitor 六个 controller 共 42 处，`/api/docs` 从半成品变完整）
+- 新增：**`CONTRIBUTING.md`**（开发约定：三件套/权限指令/格式化/事务写法/错误码/测试要求）
+- 新增：**`docs/upgrade-path.md`**（升级路径：框架文件与业务文件的边界清单、合并冲突的三个集中点、升级步骤与反模式）——复用型框架能否被长期使用的核心
+- 新增：**多实例前置条件说明**（`docs/deploy.md` 新章节）：明确限流/登录锁定是单机内存态、文件/日志依赖共享存储、锁与任务多实例安全
+- README 文档索引同步补充
 - 重构（框架层）：新增 `core/prisma/prisma-error.util.ts`（`withUniqueViolation`），「预检 + P2002 竞态兜底」统一覆盖 user/role/dict/config/job 五个模块（原先 user 抽了私有方法、role 内联复制、其余三个没有兜底，行为不一致）
 - 重构（框架层）：`buildTree` 泛型工具收敛到 `@sb/shared`（原先 auth/menu 两处逐字重复且用 any）；吊销用户全部 refreshToken 提炼为 `revokeAllRefreshTokens`（原先 6 处逐字重复）
 - 修复：`ConfigService` 的进程内缓存从未生效（`get()` 直查库，缓存字段与 `invalidate` 全部是死代码）；现在真正走 60s TTL 缓存，写操作即时失效

@@ -9,6 +9,7 @@ import { AppLogger } from './core/logger/logger.service';
 import { TraceMiddleware } from './core/logger/trace.middleware';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { LockModule } from './core/lock/lock.module';
+import { RedisModule } from './core/redis/redis.module';
 import { SecurityModule } from './core/security/security.module';
 import { JwtAuthGuard } from './core/security/jwt-auth.guard';
 import { PermissionsGuard } from './core/security/permissions.guard';
@@ -52,6 +53,7 @@ import { ExampleModule } from './modules/example/example.module';
     LoggerModule,
     PrismaModule,
     LockModule,
+    RedisModule,
     SecurityModule,
     OperateLogModule,
     MetricsModule,

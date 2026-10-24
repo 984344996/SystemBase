@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { RequirePermissions } from '../../core/security/permissions.decorator';
+import { LoginOnly, RequirePermissions } from '../../core/security/permissions.decorator';
 import { OperateLog } from '../../core/operate-log/operate-log.decorator';
 import { CurrentUser } from '../../core/security/current-user.decorator';
 import { AuthUser } from '../../core/security/jwt.strategy';
@@ -15,18 +15,21 @@ export class NoticeController {
 
   // ---------- 用户侧（登录即可访问） ----------
   @Get('mine')
+  @LoginOnly()
   @ApiOperation({ summary: '我可见的公告/消息（含已读标记，置顶优先）' })
   mine(@CurrentUser() user: AuthUser) {
     return this.service.mine(user.id);
   }
 
   @Get('unread-count')
+  @LoginOnly()
   @ApiOperation({ summary: '未读数量（顶栏红点）' })
   unread(@CurrentUser() user: AuthUser) {
     return this.service.unreadCount(user.id);
   }
 
   @Post(':id/read')
+  @LoginOnly()
   @ApiOperation({ summary: '标记已读（幂等）' })
   read(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: AuthUser) {
     return this.service.read(id, user.id);

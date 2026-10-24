@@ -12,6 +12,9 @@ rm -rf apps/server/src/modules/example
 
 ## 2. 创建模块骨架
 
+> **优先用生成器**：`./sb.sh gen-crud booking --title 预约`（前提：先建好 Prisma 模型并迁移）。
+> 生成产物已对齐框架约定（前端 `usePagedList` / `TablePager` / `StatusTag` / `v-permission` 三件套），以下手写流程用于理解结构或定制。
+
 ```
 modules/booking/
 ├── booking.module.ts
@@ -106,7 +109,7 @@ const result = await paginate(this.prisma, this.prisma.booking, {
 <!-- 满足任一即可 -->
 <el-button v-permission="['booking:update', 'booking:reset']">编辑</el-button>
 
-<!-- 需要复杂判断时用函数式 -->
+<!-- 需要 :disabled 等函数判断时才用函数式（如 :disabled="!auth.hasPerm('booking:update')"） -->
 <el-button v-if="auth.hasPerm('booking:create')">新增</el-button>
 ```
 

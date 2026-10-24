@@ -19,7 +19,7 @@ function parse(file) {
     const m = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
     if (!m) continue;
     let v = m[2];
-    const q = v[0];
+    const q = v[0];admin
     if (q === '"' || q === "'") {
       const end = v.indexOf(q, 1);
       v = end > 0 ? v.slice(1, end) : v.slice(1);

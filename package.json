@@ -9,6 +9,7 @@
     "dev:web": "pnpm --filter @sb/web dev",
     "build": "pnpm --filter @sb/shared build && pnpm --filter @sb/server build && pnpm --filter @sb/web build",
     "test": "pnpm --filter @sb/server test",
+    "docs:gen": "node scripts/gen-docs.mjs",
     "lint": "pnpm -r lint"
   },
   "devDependencies": {

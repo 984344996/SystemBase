@@ -28,18 +28,20 @@ export class TraceMiddleware implements NestMiddleware {
         const status = res.statusCode;
         const costMs = Date.now() - startAt;
         const level = status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info';
+        // 只记录 path：query 里可能出现 token、手机号等敏感参数，不进访问日志
+        const path = req.originalUrl.split('?')[0];
         this.logger.access(
           {
             traceId,
             method: req.method,
-            url: req.originalUrl,
+            url: path,
             status,
             costMs,
             ip: req.ip,
             userId: (req as { user?: { id?: number } }).user?.id,
             ua: (req.headers['user-agent'] || '').slice(0, 200),
           },
-          `${req.method} ${req.originalUrl} ${status} ${costMs}ms`,
+          `${req.method} ${path} ${status} ${costMs}ms`,
           level,
         );
       });

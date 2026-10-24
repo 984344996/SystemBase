@@ -10,16 +10,15 @@ import { setupSwagger, shouldEnableSwagger } from './core/swagger';
 
 /**
  * TRUST_PROXY 解析：
- * - 数字 = 信任的代理跳数（默认 1，适配 nginx 单层反代）
+ * - 数字 = 信任的代理跳数（Nginx 单层反代配 1）
  * - true = 信任所有（仅本机调试用，存在伪造 X-Forwarded-For 风险）
- * - false = 不信任（服务直连暴露、无反代时用）
+ * - false = 不信任（默认；服务直连暴露、无反代时必须用它）
  */
 function parseTrustProxy(v: string | undefined): boolean | number {
-  if (v === undefined || v === '') return 1;
+  if (v === undefined || v === '' || v === 'false') return false;
   if (v === 'true') return true;
-  if (v === 'false') return false;
   const n = Number(v);
-  return Number.isInteger(n) && n >= 0 ? n : 1;
+  return Number.isInteger(n) && n >= 0 ? n : false;
 }
 
 async function bootstrap() {

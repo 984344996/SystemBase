@@ -97,7 +97,7 @@
           <el-input v-model="pwdForm.oldPassword" type="password" show-password />
         </el-form-item>
         <el-form-item label="新密码">
-          <el-input v-model="pwdForm.newPassword" type="password" show-password placeholder="至少 6 位" />
+          <el-input v-model="pwdForm.newPassword" type="password" show-password :placeholder="PASSWORD_HINT" />
         </el-form-item>
         <el-form-item label="确认密码">
           <el-input v-model="pwdForm.confirm" type="password" show-password />
@@ -105,14 +105,14 @@
       </el-form>
       <template #footer>
         <el-button @click="pwdVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitPassword">确认修改</el-button>
+        <el-button type="primary" :loading="pwdSaving" @click="submitPassword">确认修改</el-button>
       </template>
     </el-dialog>
   </el-container>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { Bell } from "@element-plus/icons-vue";
@@ -120,12 +120,14 @@ import { useAuthStore } from "@/stores/auth";
 import { authApi } from "@/api/auth";
 import { noticeApi, type NoticeRow } from "@/api/notice";
 import { formatTime } from "@/utils/datetime";
+import { PASSWORD_HINT, passwordProblem } from "@/utils/password";
 
 const router = useRouter();
 const auth = useAuthStore();
 const menus = computed(() => auth.menus);
 
 const pwdVisible = ref(false);
+const pwdSaving = ref(false);
 const pwdForm = reactive({ oldPassword: "", newPassword: "", confirm: "" });
 
 // ---------- 公告中心 ----------
@@ -135,6 +137,7 @@ const noticeDetail = ref<NoticeRow | null>(null);
 const noticeVisible = ref(false);
 
 async function loadNotices() {
+  refreshUnread(); // 打开面板时顺便刷新红点
   try {
     notices.value = await noticeApi.mine();
   } catch {
@@ -147,6 +150,25 @@ async function refreshUnread() {
     unread.value = await noticeApi.unreadCount();
   } catch {
     unread.value = 0;
+  }
+}
+
+/** 未读数轮询：60s 一次，页面不可见时暂停，回到前台立即刷新一次 */
+const POLL_MS = 60_000;
+let pollTimer: ReturnType<typeof setInterval> | undefined;
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(refreshUnread, POLL_MS);
+}
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = undefined;
+}
+function onVisibilityChange() {
+  if (document.hidden) stopPolling();
+  else {
+    refreshUnread();
+    startPolling();
   }
 }
 
@@ -176,15 +198,31 @@ function onCommand(cmd: string) {
 }
 
 async function submitPassword() {
-  if (!pwdForm.oldPassword || pwdForm.newPassword.length < 6) return ElMessage.warning("请填写完整，新密码至少 6 位");
+  if (pwdSaving.value) return;
+  if (!pwdForm.oldPassword) return ElMessage.warning("请填写原密码");
+  const problem = passwordProblem(pwdForm.newPassword, auth.user?.username);
+  if (problem) return ElMessage.warning(problem);
   if (pwdForm.newPassword !== pwdForm.confirm) return ElMessage.warning("两次输入的新密码不一致");
-  await authApi.changePassword({ oldPassword: pwdForm.oldPassword, newPassword: pwdForm.newPassword });
-  ElMessage.success("密码已修改，请重新登录");
-  pwdVisible.value = false;
-  setTimeout(() => auth.logout(), 800);
+  pwdSaving.value = true;
+  try {
+    await authApi.changePassword({ oldPassword: pwdForm.oldPassword, newPassword: pwdForm.newPassword });
+    ElMessage.success("密码已修改，请重新登录");
+    pwdVisible.value = false;
+    setTimeout(() => auth.logout(), 800);
+  } finally {
+    pwdSaving.value = false;
+  }
 }
 
-onMounted(refreshUnread);
+onMounted(() => {
+  refreshUnread();
+  startPolling();
+  document.addEventListener("visibilitychange", onVisibilityChange);
+});
+onBeforeUnmount(() => {
+  stopPolling();
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+});
 </script>
 
 <style scoped>

@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
+import { isAxiosError } from "axios";
+import { ElMessageBox } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { registerDynamicRoutes } from "@/stores/permission";
 import { doneProgress, startProgress } from "@/utils/progress";
@@ -59,9 +61,19 @@ router.beforeEach(async (to) => {
       registerDynamicRoutes(auth.menus);
       auth.routesLoaded = true;
       return { ...to, replace: true }; // 重新进入以命中刚注册的路由
-    } catch {
-      await auth.logout();
-      return { path: "/login" };
+    } catch (e) {
+      // 只有会话确实失效（刷新后仍 401）才登出；后端重启/断网/5xx 时保留登录态，提示重试
+      if (isAxiosError(e) && e.response?.status === 401) {
+        await auth.logout();
+        return { path: "/login" };
+      }
+      doneProgress();
+      await ElMessageBox.alert("加载用户信息失败，可能是网络异常或服务正在重启，请稍后重试。", "加载失败", {
+        confirmButtonText: "重试",
+        showClose: false,
+      }).catch(() => undefined);
+      window.location.reload();
+      return false;
     }
   }
 
@@ -78,9 +90,13 @@ router.beforeEach(async (to) => {
   return true;
 });
 
+const CHUNK_RELOAD_KEY = "sb_chunk_reload";
+
 router.afterEach((to) => {
   doneProgress();
   document.title = `${to.meta.title || "SystemBase"} · SystemBase`;
+  // 导航成功：清掉「已为该地址刷新过一次」的标记，下次发版仍能自动刷新
+  sessionStorage.removeItem(CHUNK_RELOAD_KEY);
 });
 
 /**
@@ -92,11 +108,15 @@ router.onError((err, to) => {
   const chunkFailed = /Failed to fetch dynamically imported module|Loading chunk|Importing a module script failed/i.test(
     String(err?.message || err),
   );
-  const key = "sb_chunk_reload";
-  if (chunkFailed && sessionStorage.getItem(key) !== to.fullPath) {
-    sessionStorage.setItem(key, to.fullPath);
+  if (!chunkFailed) return;
+  if (sessionStorage.getItem(CHUNK_RELOAD_KEY) !== to.fullPath) {
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, to.fullPath);
     // to.fullPath 不含 base，子路径部署时要自己拼上（BASE_URL 带尾斜杠）
     window.location.assign(`${import.meta.env.BASE_URL}${to.fullPath.replace(/^\//, "")}`);
+  } else {
+    ElMessageBox.alert("页面资源已更新，请刷新浏览器后重试。", "版本已更新", { confirmButtonText: "刷新" })
+      .then(() => window.location.reload())
+      .catch(() => undefined);
   }
 });
 

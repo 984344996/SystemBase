@@ -23,7 +23,11 @@ export const fileApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  /** 下载链接（仍走接口鉴权，带上 token 后可直接用浏览器下载） */
-  downloadUrl: (id: number) => `${import.meta.env.BASE_URL}api/files/${id}/download`,
+  /**
+   * 下载：走 axios（Authorization 头鉴权，过期自动静默刷新），返回 Blob 由调用方保存。
+   * 不用 `<a href="...?token=">`：token 会写进 Nginx/代理访问日志，且后端只认请求头。
+   */
+  download: (id: number) =>
+    request.get<never, Blob>(`/files/${id}/download`, { responseType: "blob", timeout: 300_000 }),
   remove: (id: number) => request.delete<never, { success: boolean }>(`/files/${id}`),
 };

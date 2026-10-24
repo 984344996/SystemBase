@@ -1,0 +1,11 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "..",
+  "testRegex": ".\\.e2e-spec\\.ts$",
+  "transform": {
+    "^.+\\.ts$": "ts-jest"
+  },
+  "testEnvironment": "node",
+  "setupFiles": ["reflect-metadata", "<rootDir>/test/e2e-env.setup.ts"],
+  "globalSetup": "<rootDir>/test/global-setup.ts"
+}

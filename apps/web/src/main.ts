@@ -5,6 +5,7 @@ import App from "./App.vue";
 import router from "./router";
 import { permission } from "./directives/permission";
 import { reportClientLog, setupClientLog } from "@/utils/clientLog";
+import { setupAuthSync } from "@/utils/request";
 import "./styles/index.css";
 
 // Element Plus 组件/样式由 unplugin-vue-components 按需引入，无需全局注册
@@ -22,6 +23,8 @@ app.directive("permission", permission);
 
 // 前端异常上报：window.onerror / unhandledrejection / Vue 组件错误 → 后端 web.YYYY-MM-DD.log
 setupClientLog();
+// 跨标签页登录态同步：其他标签页登出/换账号时本页刷新，避免界面身份与请求身份不一致
+setupAuthSync();
 app.config.errorHandler = (err, _instance, info) => {
   reportClientLog({
     level: "error",

@@ -28,7 +28,7 @@ export class ConfigController {
 
   @Post()
   @RequirePermissions('system:config:create')
-  @OperateLog({ module: '系统参数', action: '新增参数' })
+  @OperateLog({ module: '系统参数', action: '新增参数', omitParams: ['value'] })
   @ApiOperation({ summary: '新增系统参数' })
   create(@Body() dto: CreateConfigDto) {
     return this.service.create(dto);
@@ -36,7 +36,7 @@ export class ConfigController {
 
   @Put(':key')
   @RequirePermissions('system:config:update')
-  @OperateLog({ module: '系统参数', action: '修改参数' })
+  @OperateLog({ module: '系统参数', action: '修改参数', omitParams: ['value'] })
   @ApiOperation({ summary: '修改系统参数（即时生效，无需重启）' })
   update(@Param('key') key: string, @Body() dto: UpdateConfigDto) {
     return this.service.update(key, dto);

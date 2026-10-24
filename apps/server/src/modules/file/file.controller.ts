@@ -1,7 +1,9 @@
-import { Controller, Delete, Get, Param, ParseIntPipe, Post, Query, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { Controller, Delete, Get, Param, ParseIntPipe, Post, Query, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Request, Response } from 'express';
+import { pipeline } from 'node:stream/promises';
+import { AppLogger } from '../../core/logger/logger.service';
 import { RequirePermissions } from '../../core/security/permissions.decorator';
 import { OperateLog } from '../../core/operate-log/operate-log.decorator';
 import { CurrentUser } from '../../core/security/current-user.decorator';
@@ -13,7 +15,10 @@ import { QueryFileDto } from './file.dto';
 @ApiBearerAuth('accessToken')
 @Controller('files')
 export class FileController {
-  constructor(private readonly service: FileService) {}
+  constructor(
+    private readonly service: FileService,
+    private readonly logger: AppLogger,
+  ) {}
 
   @Get()
   @RequirePermissions('system:file:list')
@@ -32,19 +37,38 @@ export class FileController {
     return this.service.upload(file, user.id);
   }
 
-  /** 下载：走接口鉴权（不直接暴露静态目录）；带 ETag 支持客户端缓存协商 */
+  /**
+   * 下载：走接口鉴权（Authorization 头，不直接暴露静态目录）。
+   * 用 pipeline 而非 pipe：读盘出错时能捕获并结束响应，不会变成 uncaughtException 打挂进程。
+   */
   @Get(':id/download')
   @RequirePermissions('system:file:download')
   @ApiOperation({ summary: '下载文件（需登录与权限）' })
-  async download(@Param('id', ParseIntPipe) id: number, @Res() res: Response) {
-    const { row, stream } = await this.service.open(id);
+  async download(@Param('id', ParseIntPipe) id: number, @Req() req: Request, @Res() res: Response) {
+    const { row, size, stream } = await this.service.open(id);
+    const etag = FileService.etagOf(size, row.path);
+    if (req.headers['if-none-match'] === etag) {
+      stream.destroy();
+      res.status(304).end();
+      return;
+    }
     res.set({
       'Content-Type': row.mime,
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(row.name)}`,
-      'Content-Length': String(row.size),
-      ETag: FileService.etagOf(row.size, row.path),
+      'Content-Length': String(size),
+      'X-Content-Type-Options': 'nosniff',
+      ETag: etag,
     });
-    stream.pipe(res);
+    try {
+      await pipeline(stream, res);
+    } catch (e) {
+      // 客户端中途断开属于正常情况；读盘失败则记录并终止连接
+      if ((e as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        this.logger.warnFields({ event: 'file_download', fileId: id }, `文件下载中断: ${(e as Error).message}`);
+      }
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy();
+    }
   }
 
   @Delete(':id')

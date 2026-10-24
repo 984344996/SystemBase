@@ -50,7 +50,7 @@
           <el-input v-model="form.username" placeholder="登录用户名" />
         </el-form-item>
         <el-form-item label="密码" v-if="!editingId">
-          <el-input v-model="form.password" type="password" show-password placeholder="至少 6 位" />
+          <el-input v-model="form.password" type="password" show-password :placeholder="PASSWORD_HINT" />
         </el-form-item>
         <el-form-item label="姓名"><el-input v-model="form.name" /></el-form-item>
         <el-form-item label="手机号"><el-input v-model="form.phone" /></el-form-item>
@@ -70,7 +70,7 @@
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">保存</el-button>
+        <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
   </div>
@@ -82,20 +82,22 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { userApi, roleApi, type UserRow } from "@/api/system";
 import { usePagedList } from "@/composables/usePagedList";
 import { formatTime } from "@/utils/datetime";
+import { PASSWORD_HINT, passwordProblem } from "@/utils/password";
 
 const { query, rows, total, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "", status: "" },
   (q) => userApi.list({ ...q, keyword: q.keyword || undefined, status: q.status || undefined }),
 );
 const dialogVisible = ref(false);
+const saving = ref(false);
 const editingId = ref<number | null>(null);
 const allRoles = ref<{ id: number; code: string; name: string }[]>([]);
 
 const emptyForm = { username: "", password: "", name: "", phone: "", email: "", remark: "", status: "ENABLED", roleIds: [] as number[] };
-const form = reactive({ ...emptyForm });
+const form = reactive({ ...emptyForm, roleIds: [] as number[] });
 
 function openCreate() {
-  Object.assign(form, emptyForm);
+  Object.assign(form, { ...emptyForm, roleIds: [] });
   editingId.value = null;
   dialogVisible.value = true;
 }
@@ -116,15 +118,23 @@ function openEdit(row: UserRow) {
 }
 
 async function submit() {
-  if (editingId.value) {
-    await userApi.update(editingId.value, { ...form });
-  } else {
-    if (!form.username || form.password.length < 6 || !form.name) return ElMessage.warning("请完整填写必填项（密码至少 6 位）");
-    await userApi.create({ ...form });
+  const { username, password, ...profile } = form;
+  if (!editingId.value) {
+    if (!username || !profile.name) return ElMessage.warning("请填写用户名与姓名");
+    const problem = passwordProblem(password, username);
+    if (problem) return ElMessage.warning(problem);
   }
-  ElMessage.success("保存成功");
-  dialogVisible.value = false;
-  load();
+  saving.value = true;
+  try {
+    // 编辑时不提交 username/password（UpdateUserDto 白名单不含这两个字段，会被后端拒绝）
+    if (editingId.value) await userApi.update(editingId.value, profile);
+    else await userApi.create({ username, password, ...profile });
+    ElMessage.success("保存成功");
+    dialogVisible.value = false;
+    load();
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function remove(row: UserRow) {
@@ -134,13 +144,15 @@ async function remove(row: UserRow) {
 }
 
 async function resetPwd(row: UserRow) {
-  const { value } = await ElMessageBox.prompt(`为用户「${row.name}」设置新密码`, "重置密码", {
-    inputPattern: /^.{6,50}$/,
-    inputErrorMessage: "密码至少 6 位",
+  const value = await ElMessageBox.prompt(`为用户「${row.name}」设置新密码（${PASSWORD_HINT}）`, "重置密码", {
+    inputValidator: (v) => passwordProblem(v, row.username) ?? true,
     inputType: "password",
-  });
+  })
+    .then((r) => r.value)
+    .catch(() => null); // 用户取消
+  if (!value) return;
   await userApi.resetPassword(row.id, value);
-  ElMessage.success("密码已重置");
+  ElMessage.success("密码已重置，该用户下次登录需修改密码");
 }
 
 onMounted(async () => {

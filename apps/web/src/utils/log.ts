@@ -36,5 +36,6 @@ export function saveBlob(blob: Blob, filename: string) {
   a.href = url;
   a.download = filename;
   a.click();
-  URL.revokeObjectURL(url);
+  // 延迟回收：部分浏览器（旧版 Safari/Firefox）click 后立即 revoke 会取消下载
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
 }

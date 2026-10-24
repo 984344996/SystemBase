@@ -46,28 +46,34 @@
           </el-radio-group>
         </el-form-item>
         <el-form-item label="菜单权限">
+          <!--
+            check-strictly：勾选状态与授权集合一一对应（联动模式无法表达「有页面、无按钮」，且回显会丢权限）。
+            联动由 onTreeCheck 显式实现：勾选 → 连带子孙与祖先；取消 → 连带子孙。
+          -->
           <el-tree
             ref="menuTreeRef"
             :data="menuTree"
             node-key="id"
             show-checkbox
+            check-strictly
             default-expand-all
             :props="{ label: 'name', children: 'children' }"
             style="width: 100%; border: 1px solid #ebeef5; border-radius: 4px; padding: 6px; max-height: 320px; overflow: auto"
+            @check="onTreeCheck"
           />
         </el-form-item>
         <el-form-item label="备注"><el-input v-model="form.remark" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submit">保存</el-button>
+        <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import type { ElTree } from "element-plus";
 import { roleApi, type RoleRow } from "@/api/system";
@@ -79,24 +85,56 @@ const { query, rows, total, load, search } = usePagedList(
   (q) => roleApi.list({ ...q, keyword: q.keyword || undefined }),
 );
 const dialogVisible = ref(false);
+const saving = ref(false);
 const editingId = ref<number | null>(null);
 const menuTree = ref<MenuNode[]>([]);
 const menuTreeRef = ref<InstanceType<typeof ElTree>>();
 
-const emptyForm = { code: "", name: "", status: "ENABLED", remark: "", menuIds: [] as number[] };
+const emptyForm = { code: "", name: "", status: "ENABLED", remark: "" };
 const form = reactive({ ...emptyForm });
 
-function checkedKeys(): number[] {
+/** 菜单树索引：id → 父 id / 子孙 id（用于显式联动） */
+const treeIndex = computed(() => {
+  const parent = new Map<number, number | null>();
+  const descendants = new Map<number, number[]>();
+  const walk = (nodes: MenuNode[], pid: number | null): number[] => {
+    const all: number[] = [];
+    for (const n of nodes) {
+      parent.set(n.id, pid);
+      const sub = n.children?.length ? walk(n.children, n.id) : [];
+      descendants.set(n.id, sub);
+      all.push(n.id, ...sub);
+    }
+    return all;
+  };
+  walk(menuTree.value, null);
+  return { parent, descendants };
+});
+
+function onTreeCheck(node: MenuNode, state: { checkedKeys: (string | number)[] }) {
   const tree = menuTreeRef.value;
-  if (!tree) return [];
-  // 只取叶子节点(按钮/页面)，父节点由后端语义自行包含
-  return [...(tree.getCheckedKeys() as number[]), ...(tree.getHalfCheckedKeys() as number[])];
+  if (!tree) return;
+  const checked = new Set(state.checkedKeys as number[]);
+  const { parent, descendants } = treeIndex.value;
+  const subs = descendants.get(node.id) ?? [];
+  if (checked.has(node.id)) {
+    subs.forEach((id) => checked.add(id));
+    // 授权按钮/页面时必须同时拥有其所在页面/目录，否则菜单不显示、页面进不去
+    for (let p = parent.get(node.id) ?? null; p !== null; p = parent.get(p) ?? null) checked.add(p);
+  } else {
+    subs.forEach((id) => checked.delete(id));
+  }
+  tree.setCheckedKeys([...checked]);
+}
+
+async function ensureMenuTree() {
+  if (!menuTree.value.length) menuTree.value = await roleApi.menuTree();
 }
 
 async function openCreate() {
   Object.assign(form, emptyForm);
   editingId.value = null;
-  if (!menuTree.value.length) menuTree.value = await roleApi.menuTree();
+  await ensureMenuTree();
   dialogVisible.value = true;
   await nextTick();
   menuTreeRef.value?.setCheckedKeys([]);
@@ -104,38 +142,32 @@ async function openCreate() {
 
 async function openEdit(row: RoleRow) {
   const detail = await roleApi.detail(row.id);
-  Object.assign(form, { code: row.code, name: row.name, status: row.status, remark: row.remark || "", menuIds: detail.menuIds || [] });
+  Object.assign(form, { code: row.code, name: row.name, status: row.status, remark: row.remark || "" });
   editingId.value = row.id;
-  if (!menuTree.value.length) menuTree.value = await roleApi.menuTree();
+  await ensureMenuTree();
   dialogVisible.value = true;
   await nextTick();
-  // 只勾选叶子节点，避免父级勾选联动误选全部子节点
-  collectLeafIds(menuTree.value, new Set(detail.menuIds || [])).forEach((id) => {
-    menuTreeRef.value?.setChecked(id, true, false);
-  });
-}
-
-/** 收集树中「无子节点」的叶子 id */
-function collectLeafIds(nodes: MenuNode[], allowed: Set<number>, acc: number[] = []): number[] {
-  for (const n of nodes) {
-    if (n.children?.length) collectLeafIds(n.children, allowed, acc);
-    else if (allowed.has(n.id)) acc.push(n.id);
-  }
-  return acc;
+  // setCheckedKeys 是整体替换：不会残留上一个角色的勾选（弹窗不销毁，追加式 setChecked 会多授权）
+  menuTreeRef.value?.setCheckedKeys(detail.menuIds || []);
 }
 
 async function submit() {
-  const menuIds = checkedKeys();
-  if (editingId.value) {
-    await roleApi.update(editingId.value, { name: form.name, status: form.status, remark: form.remark, menuIds });
-  } else {
-    if (!form.code || !form.name) return ElMessage.warning("请填写角色编码与名称");
-    // 创建不传 status（CreateRoleDto 白名单校验会拒绝），后端默认 ENABLED
-    await roleApi.create({ code: form.code, name: form.name, remark: form.remark, menuIds });
+  if (!editingId.value && (!form.code || !form.name)) return ElMessage.warning("请填写角色编码与名称");
+  const menuIds = (menuTreeRef.value?.getCheckedKeys() as number[]) ?? [];
+  saving.value = true;
+  try {
+    if (editingId.value) {
+      await roleApi.update(editingId.value, { name: form.name, status: form.status, remark: form.remark, menuIds });
+    } else {
+      // 创建不传 status（CreateRoleDto 白名单校验会拒绝），后端默认 ENABLED
+      await roleApi.create({ code: form.code, name: form.name, remark: form.remark, menuIds });
+    }
+    ElMessage.success("保存成功");
+    dialogVisible.value = false;
+    load();
+  } finally {
+    saving.value = false;
   }
-  ElMessage.success("保存成功");
-  dialogVisible.value = false;
-  load();
 }
 
 async function remove(row: RoleRow) {

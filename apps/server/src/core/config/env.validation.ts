@@ -54,10 +54,15 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   );
 
   const isProd = config.NODE_ENV === 'production';
+  // 只有显式声明为开发/测试环境才允许用默认密钥：漏配 NODE_ENV 时按生产要求处理，
+  // 否则一次漏配就会用源码里公开的密钥签发 token（任何人可伪造任意用户）
+  const isDevLike = config.NODE_ENV === 'development' || config.NODE_ENV === 'test';
   const secret = (config.JWT_SECRET as string) || '';
   if (!secret || secret.length < 16) {
-    if (isProd) {
-      problems.push('JWT_SECRET 必填且长度至少 16 位（生产环境禁止使用默认密钥）');
+    if (!isDevLike) {
+      problems.push(
+        `JWT_SECRET 必填且长度至少 16 位（当前 NODE_ENV=${config.NODE_ENV ?? '未设置'}；仅 development/test 环境允许使用默认密钥）`,
+      );
     } else if (!secret) {
       env.JWT_SECRET = 'systembase-dev-secret-change-me';
     }
@@ -77,7 +82,9 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     JWT_EXPIRES_IN: env.JWT_EXPIRES_IN || '2h',
     JWT_REFRESH_EXPIRES_IN: env.JWT_REFRESH_EXPIRES_IN || '7d',
     PORT: env.PORT || '3000',
-    TRUST_PROXY: env.TRUST_PROXY || '1',
+    // 默认不信任代理头：服务直接对外时 X-Forwarded-For 可被伪造（绕过 IP 白名单/限流/登录锁定）。
+    // 经 Nginx 反代部署时在 env 显式配置 TRUST_PROXY=1（remote.env.example 已默认写好）
+    TRUST_PROXY: env.TRUST_PROXY || 'false',
     CORS_ORIGINS: env.CORS_ORIGINS || '',
     LOCK_DRIVER: env.LOCK_DRIVER || 'db',
     REDIS_URL: env.REDIS_URL || 'redis://localhost:6379',

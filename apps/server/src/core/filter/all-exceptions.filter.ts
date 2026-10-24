@@ -9,6 +9,7 @@ import {
 import { Response } from 'express';
 import { AppLogger } from '../logger/logger.service';
 import { getTraceId } from '../logger/trace.context';
+import { BusinessException } from './business.exception';
 
 /** 统一错误响应结构（与成功结构同形，code 非 0） */
 @Catch()
@@ -24,9 +25,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = '服务器内部错误';
     let code = 500;
+    let data: unknown = null;
     let detail: unknown;
 
-    if (exception instanceof HttpException) {
+    if (exception instanceof BusinessException) {
+      // 业务异常：code 用业务码（与 HTTP 状态解耦），data 透传附加信息
+      status = exception.getStatus();
+      const body = exception.getResponse() as { bizCode: number; message: string; data?: unknown };
+      message = body.message;
+      code = body.bizCode;
+      data = body.data ?? null;
+    } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       code = status;
       const body = exception.getResponse();
@@ -50,6 +59,6 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.appLogger.warnFields(logFields, message);
     }
 
-    res.status(status).json({ code, data: null, message, traceId });
+    res.status(status).json({ code, data, message, traceId });
   }
 }

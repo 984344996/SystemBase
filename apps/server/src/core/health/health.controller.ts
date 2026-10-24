@@ -69,7 +69,7 @@ export class HealthController {
     checks.logDir = this.logDirWritable() ? 'writable' : 'readonly';
     if (checks.logDir === 'readonly') {
       ready = false;
-      this.logger.warn({}, '日志目录不可写，就绪检查失败');
+      this.logger.warnFields({}, '日志目录不可写，就绪检查失败');
     }
 
     if (!ready) res.status(HttpStatus.SERVICE_UNAVAILABLE);

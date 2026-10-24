@@ -6,15 +6,22 @@ import { AppLogger } from '../logger/logger.service';
 import { AuthUser } from '../security/jwt.strategy';
 import { OPERATE_LOG_KEY, OperateLogOptions } from './operate-log.decorator';
 
-const SENSITIVE_KEYS = ['password', 'oldPassword', 'newPassword', 'token', 'refreshToken', 'accessToken'];
+/**
+ * 敏感键名（不区分大小写、子串匹配）：password / confirmPassword / pwd / secret / token / captcha / apiKey ...
+ * 精确匹配会漏掉 confirmPassword、captchaCode、webhookSecret 等变体。
+ */
+const SENSITIVE_KEY = /pass(word)?|pwd|secret|token|captcha|api[-_]?key|credential|authorization|cookie/i;
+const MAX_DEPTH = 3;
 
-function redact(value: unknown, depth = 0): unknown {
-  if (depth > 3 || value === null || value === undefined) return value;
+export function redact(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+  // 超过深度直接截断（原样返回会让深层的 password 绕过脱敏，且整个大对象写进日志）
+  if (depth > MAX_DEPTH) return '[DEPTH_LIMIT]';
   if (Array.isArray(value)) return value.slice(0, 20).map((v) => redact(v, depth + 1));
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SENSITIVE_KEYS.includes(k) ? '[REDACTED]' : redact(v, depth + 1);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>).slice(0, 50)) {
+      out[k] = SENSITIVE_KEY.test(k) ? '[REDACTED]' : redact(v, depth + 1);
     }
     return out;
   }
@@ -45,6 +52,7 @@ export class OperateLogInterceptor implements NestInterceptor {
     const record = (error?: unknown) => {
       const user = (req as any).user as AuthUser | undefined;
       const body = { ...(req.body || {}) };
+      for (const k of options.omitParams ?? []) if (k in body) body[k] = '[OMITTED]';
       if ((req as any).file || (req as any).files) body.__files = true;
       const fields = {
         event: 'operate',

@@ -10,10 +10,16 @@ const req = { ip: '10.0.0.8', headers: { 'user-agent': 'jest' } } as any;
 const PASSWORD_HASH = bcrypt.hashSync('secret123', 4);
 
 function setup() {
-  const prisma = {
+  const prisma: any = {
     user: { findFirst: jest.fn(), update: jest.fn() },
-    refreshToken: { create: jest.fn(), findUnique: jest.fn(), update: jest.fn(), updateMany: jest.fn() },
+    refreshToken: {
+      create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
   };
+  prisma.$transaction = jest.fn((arg: any) => (typeof arg === 'function' ? arg(prisma) : Promise.all(arg)));
   const jwt = { signAsync: jest.fn().mockResolvedValue('access-token') };
   const logger = { audit: jest.fn(), warn: jest.fn() };
   const permCache = { invalidateUser: jest.fn() };
@@ -82,20 +88,41 @@ describe('AuthService.refresh', () => {
     ...patch,
   });
 
-  it('轮换：作废旧 token，签发新 token 对', async () => {
+  it('轮换：条件作废旧 token（revokedAt: null）并在同一事务内签发新 token 对', async () => {
     const { service, prisma } = setup();
     prisma.refreshToken.findUnique.mockResolvedValue(record());
 
     const res = await service.refresh('old-token', req);
 
     expect(prisma.refreshToken.findUnique.mock.calls[0][0].where.tokenHash).toBe(sha256('old-token'));
-    expect(prisma.refreshToken.update).toHaveBeenCalledWith({ where: { id: 9 }, data: { revokedAt: expect.any(Date) } });
+    expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
+      where: { id: 9, revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
+    expect(prisma.$transaction).toHaveBeenCalled();
+    expect(prisma.refreshToken.create).toHaveBeenCalled();
     expect(res.refreshToken).not.toBe('old-token');
   });
 
-  it('重放：已作废 token 再次使用 → 吊销该用户全部登录态 + WARN 审计', async () => {
+  it('并发：另一请求已抢先轮换（条件更新 count=0）→ 401，不签发新 token', async () => {
+    const { service, prisma } = setup();
+    prisma.refreshToken.findUnique.mockResolvedValue(record());
+    prisma.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+    await expect(service.refresh('old-token', req)).rejects.toThrow(UnauthorizedException);
+    expect(prisma.refreshToken.create).not.toHaveBeenCalled();
+  });
+
+  it('宽限期：刚被轮换（30s 内）的 token 再次出现 → 401 但不吊销全部登录态（多标签页并发刷新）', async () => {
     const { service, prisma, logger } = setup();
-    prisma.refreshToken.findUnique.mockResolvedValue(record({ revokedAt: new Date() }));
+    prisma.refreshToken.findUnique.mockResolvedValue(record({ revokedAt: new Date(Date.now() - 5_000) }));
+    await expect(service.refresh('reused', req)).rejects.toThrow(UnauthorizedException);
+    expect(prisma.refreshToken.updateMany).not.toHaveBeenCalled();
+    expect(logger.audit).not.toHaveBeenCalled();
+  });
+
+  it('重放：作废超过宽限期的 token 再次使用 → 吊销该用户全部登录态 + WARN 审计', async () => {
+    const { service, prisma, logger } = setup();
+    prisma.refreshToken.findUnique.mockResolvedValue(record({ revokedAt: new Date(Date.now() - 60_000) }));
 
     await expect(service.refresh('reused', req)).rejects.toThrow(UnauthorizedException);
     expect(prisma.refreshToken.updateMany).toHaveBeenCalledWith({
@@ -122,7 +149,7 @@ describe('AuthService.updateProfile', () => {
   it('空串视为清空，并失效权限缓存（姓名随之刷新）', async () => {
     const { service, prisma, permCache } = setup();
     prisma.user.findFirst.mockResolvedValue({ ...activeUser, phone: null, email: null, roles: [] });
-    const authUser = { id: 1, username: 'admin', name: '管理员', roles: [], permissions: [] };
+    const authUser = { id: 1, username: 'admin', name: '管理员', roles: [], permissions: [], mustChangePassword: false, pwdUpdatedAt: 0 };
 
     await service.updateProfile(authUser, { name: '新名字', phone: '', email: '' });
 

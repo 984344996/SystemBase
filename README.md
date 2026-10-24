@@ -88,10 +88,13 @@ ssh-copy-id root@服务器IP              # SSH 免密（推荐）；或在 env 
 
 ## 文档
 
+- [文档地图（docs/README.md，按场景导航）](docs/README.md)
 - [架构说明](docs/architecture.md)
 - [业务模块开发指南](docs/module-guide.md)
 - [定时任务指南](docs/job-guide.md)
 - [部署指南](docs/deploy.md)
 - [本地与远程发布流程（脚本调用链）](docs/flow.md)
+- [升级路径（框架文件与业务文件的边界、跟随上游更新的步骤）](docs/upgrade-path.md)
+- [框架成熟度差距分析（含待办优先级）](docs/gap-analysis.md)
 - [存储路径速查（本地/远程：日志、数据库、网站、服务器）](docs/paths.md)
 - [约定](docs/conventions.md)

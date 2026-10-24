@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { LoginOnly } from '../../core/security/permissions.decorator';
 import { CurrentUser } from '../../core/security/current-user.decorator';
 import { AuthUser } from '../../core/security/jwt.strategy';
 
@@ -9,6 +10,7 @@ import { AuthUser } from '../../core/security/jwt.strategy';
 @Controller('example')
 export class ExampleController {
   @Get('ping')
+  @LoginOnly()
   ping(@CurrentUser() user: AuthUser) {
     return { pong: true, user: user.name, time: new Date().toISOString() };
   }

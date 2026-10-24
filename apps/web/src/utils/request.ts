@@ -9,6 +9,8 @@ declare module "axios" {
   interface AxiosRequestConfig {
     /** 不弹出通用错误提示（调用方自行处理） */
     silent?: boolean;
+    /** 401 时不尝试刷新 token（前端日志上报、登出等「附属请求」用，避免它们触发刷新/踢登录） */
+    skipAuthRefresh?: boolean;
   }
 }
 
@@ -62,7 +64,7 @@ function describe(status: number | undefined, serverMsg: string | undefined, tra
 }
 
 /** blob 下载接口出错时响应体也是 Blob，需要转回 JSON 才能拿到 message */
-async function readErrorBody(data: unknown): Promise<{ message?: string; traceId?: string } | undefined> {
+async function readErrorBody(data: unknown): Promise<{ code?: number; message?: string; traceId?: string } | undefined> {
   if (data instanceof Blob) {
     try {
       return JSON.parse(await data.text());
@@ -70,13 +72,28 @@ async function readErrorBody(data: unknown): Promise<{ message?: string; traceId
       return undefined;
     }
   }
-  return data as { message?: string; traceId?: string } | undefined;
+  return data as { code?: number; message?: string; traceId?: string } | undefined;
+}
+
+// ---------------- 登录态失效与强制改密 ----------------
+/** 业务码：必须先修改密码（管理员重置过密码）—— 与后端 BizCode.PASSWORD_CHANGE_REQUIRED 一致 */
+const BIZ_PASSWORD_CHANGE_REQUIRED = 40301;
+
+const base = import.meta.env.BASE_URL;
+
+function kickToLogin(message = "登录已过期，请重新登录") {
+  clearAuth();
+  // 子路径部署时这里是 /systembase-pre/login，不能硬编码 "/login"
+  if (!window.location.pathname.startsWith(`${base}login`)) {
+    notify("warning", message);
+    window.location.href = `${base}login`;
+  }
 }
 
 // ---------------- axios 实例 ----------------
 // baseURL 跟随 vite base（根路径部署 = "/api"；子路径部署如 /systembase-pre = "/systembase-pre/api"）
 const service = axios.create({
-  baseURL: `${import.meta.env.BASE_URL}api`,
+  baseURL: `${base}api`,
   timeout: 20000,
 });
 
@@ -87,28 +104,53 @@ service.interceptors.request.use((config) => {
   return config;
 });
 
-/** 单飞刷新：并发 401 时只发起一次 refresh，其余请求等待复用结果 */
-let refreshing: Promise<string | null> | null = null;
+// ---------------- 刷新 accessToken（跨标签页安全） ----------------
+type RefreshResult = { ok: true; token: string } | { ok: false; reason: "expired" | "network" };
 
-async function doRefresh(): Promise<string | null> {
-  const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
-  if (!refreshToken) return null;
-  try {
-    // 用裸 axios，避免经过本拦截器形成循环
-    const { data } = await axios.post(`${import.meta.env.BASE_URL}api/auth/refresh`, { refreshToken });
-    const payload = data?.data || {};
-    if (!payload.accessToken) return null;
-    localStorage.setItem(TOKEN_KEY, payload.accessToken);
-    localStorage.setItem(REFRESH_TOKEN_KEY, payload.refreshToken);
-    return payload.accessToken as string;
-  } catch {
-    return null;
-  }
+/**
+ * 跨标签页互斥执行：后端是「轮换 + 重放检测」，两个标签页拿同一个 refreshToken 同时刷新，
+ * 第二个会被当成重放。用 Web Locks 让所有标签页串行刷新；不支持时退化为本标签页单飞。
+ */
+async function withRefreshLock<T>(fn: () => Promise<T>): Promise<T> {
+  const locks = (navigator as Navigator & { locks?: LockManager }).locks;
+  return locks ? (locks.request("sb-token-refresh", fn) as Promise<T>) : fn();
 }
+
+/**
+ * @param usedToken 失败请求当时携带的 accessToken。拿到锁后若 localStorage 里已是别的 token，
+ *                  说明其他请求/标签页已经刷新过，直接复用，不再发起刷新。
+ */
+async function doRefresh(usedToken: string | null): Promise<RefreshResult> {
+  return withRefreshLock(async () => {
+    const latest = localStorage.getItem(TOKEN_KEY);
+    if (latest && latest !== usedToken) return { ok: true, token: latest };
+
+    const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY);
+    if (!refreshToken) return { ok: false, reason: "expired" };
+    try {
+      // 用裸 axios，避免经过本拦截器形成循环；必须有超时，否则卡住时所有等待的请求一起卡住
+      const { data } = await axios.post(`${base}api/auth/refresh`, { refreshToken }, { timeout: 10_000 });
+      const payload = data?.data || {};
+      if (!payload.accessToken || !payload.refreshToken) return { ok: false, reason: "expired" };
+      localStorage.setItem(TOKEN_KEY, payload.accessToken);
+      localStorage.setItem(REFRESH_TOKEN_KEY, payload.refreshToken);
+      return { ok: true, token: payload.accessToken as string };
+    } catch (e) {
+      const status = (e as AxiosError).response?.status;
+      // 只有服务端明确拒绝（401/403）才算会话失效；断网/超时/5xx（如后端发版重启）保留登录态
+      return { ok: false, reason: status === 401 || status === 403 ? "expired" : "network" };
+    }
+  });
+}
+
+/** 本标签页单飞：同一时刻多个 401 只走一次 doRefresh */
+let refreshing: Promise<RefreshResult> | null = null;
 
 interface RetriableConfig extends InternalAxiosRequestConfig {
   _retried?: boolean;
 }
+
+const bearer = (h: unknown) => (typeof h === "string" && h.startsWith("Bearer ") ? h.slice(7) : null);
 
 service.interceptors.response.use(
   (response) => {
@@ -120,7 +162,8 @@ service.interceptors.response.use(
     if (body && typeof body === "object" && !(body instanceof Blob) && "code" in body) {
       if (body.code === 0) return body.data;
       if (!response.config.silent) notify("warning", body.message || "请求失败");
-      return Promise.reject(new Error(body.message));
+      // 标记为接口错误：已提示过用户，未捕获时不当作前端 bug 上报（见 clientLog.isNoise）
+      return Promise.reject(Object.assign(new Error(body.message), { __api: true }));
     }
     return body;
   },
@@ -128,27 +171,24 @@ service.interceptors.response.use(
     const config = error.config as RetriableConfig | undefined;
     const url = config?.url || "";
     const status = error.response?.status;
-    const isAuthApi = url.includes("/auth/login") || url.includes("/auth/refresh");
+    const isAuthApi = /\/auth\/(login|refresh|logout)/.test(url);
 
-    // 401：静默刷新后重放原请求；刷新失败才踢回登录页
-    if (status === 401 && config && !config._retried && !isAuthApi) {
+    // 401：静默刷新后重放原请求；只有会话确实失效才踢回登录页
+    if (status === 401 && config && !config._retried && !isAuthApi && !config.skipAuthRefresh) {
+      const usedToken = bearer(config.headers?.Authorization);
       if (!refreshing) {
-        refreshing = doRefresh().finally(() => {
+        refreshing = doRefresh(usedToken).finally(() => {
           refreshing = null;
         });
       }
-      const token = await refreshing;
-      if (token) {
+      const result = await refreshing;
+      if (result.ok) {
         config._retried = true;
-        config.headers.Authorization = `Bearer ${token}`;
+        config.headers.Authorization = `Bearer ${result.token}`;
         return service(config);
       }
-      clearAuth();
-      // 子路径部署时这里是 /systembase-pre/login，不能硬编码 "/login"
-      if (!window.location.pathname.startsWith(`${import.meta.env.BASE_URL}login`)) {
-        notify("warning", "登录已过期，请重新登录");
-        window.location.href = `${import.meta.env.BASE_URL}login`;
-      }
+      if (result.reason === "expired") kickToLogin();
+      else notify("error", "网络异常，登录状态校验失败，请稍后重试");
       return Promise.reject(error);
     }
 
@@ -156,6 +196,13 @@ service.interceptors.response.use(
     if (config?.silent || (status === 401 && isAuthApi)) return Promise.reject(error);
 
     const body = await readErrorBody(error.response?.data);
+
+    // 服务端强制改密：只有改密/个人信息接口可用，其余请求统一引导到改密页
+    if (status === 403 && body?.code === BIZ_PASSWORD_CHANGE_REQUIRED) {
+      if (!window.location.pathname.startsWith(`${base}change-password`)) window.location.href = `${base}change-password`;
+      return Promise.reject(error);
+    }
+
     const traceId =
       body?.traceId || (error.response?.headers?.["x-trace-id"] as string) || (config?.headers?.["X-Trace-Id"] as string) || "";
     const { level, text } = describe(status, body?.message, traceId, error.code);
@@ -164,5 +211,28 @@ service.interceptors.response.use(
     return Promise.reject(error);
   },
 );
+
+/**
+ * 跨标签页登录态同步：其他标签页登出/换账号时，本标签页内存里的用户与权限已过期，
+ * 而请求会带上新 token（拦截器每次读 localStorage）——界面身份与实际身份不一致。
+ * 发现 token 被清空或被换成另一个账号的 token 时整页刷新，按新登录态重新加载。
+ */
+export function setupAuthSync(): void {
+  const subjectOf = (token: string | null) => {
+    try {
+      return token ? JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sub : null;
+    } catch {
+      return null;
+    }
+  };
+  window.addEventListener("storage", (e) => {
+    if (e.key !== TOKEN_KEY && e.key !== null) return;
+    const before = subjectOf(e.oldValue);
+    const after = subjectOf(localStorage.getItem(TOKEN_KEY));
+    // 同一账号的 token 轮换（另一个标签页刷新了 token）无需处理
+    if (before === after && after !== null) return;
+    window.location.reload();
+  });
+}
 
 export default service;

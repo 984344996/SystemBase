@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { RedisClientService } from '../../core/redis/redis.module';
 import { MenuService } from './menu.service';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
@@ -10,7 +11,7 @@ function setup() {
     roleMenu: { deleteMany: jest.fn() },
   };
   prisma.$transaction = jest.fn((arg: any) => Promise.all(arg));
-  const permCache = new PermissionCacheService(new ConfigService({ PERMISSION_CACHE_TTL: '30' }));
+  const permCache = new PermissionCacheService(new ConfigService({ PERMISSION_CACHE_TTL: '30' }), new RedisClientService(new ConfigService({ LOCK_DRIVER: 'db' })));
   const invalidateAll = jest.spyOn(permCache, 'invalidateAll');
   const service = new MenuService(prisma as unknown as PrismaService, permCache);
   return { service, prisma, invalidateAll };
