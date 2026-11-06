@@ -13,9 +13,10 @@
 #   ./sb.sh remote-pre <命令>                        预发布环境操作
 #   ./sb.sh remote-release <命令>                     正式环境操作
 #
-#   远程 <命令>: deploy(默认，发布) | init(首次初始化服务器) | fresh(重置数据) |
+#   远程 <命令>: deploy(默认，发布) | init(首次初始化服务器) | fresh(重置数据) | deploy-log |
 #               status | logs | releases | rollback | restart | start | stop |
-#               db-backup | db-restore | doctor | ssl 域名 | db-remote-on/off | ssh
+#               migrate-status | migrate-resolve | db-backup | db-restore | doctor |
+#               ssl 域名 | db-remote-on/off | ssh
 #
 # ------------------------------------------------------------------
 # 每个命令实际会做什么（按顺序）：
@@ -39,30 +40,38 @@
 #                ③ 生成 Nginx 站点、放行 80/443、设置 PM2 开机自启
 #                ④ 上传应用配置为 shared/.env ⑤ 执行一次完整发布
 #                （可重复执行；不会重建数据库）
-#   deploy(默认) ① 跑单测 ② 本机构建前后端 ③ 打包(约 0.5MB)上传
-#                ④ 服务器按 lockfile 装生产依赖
-#                ⑤ 数据库预检（本机 MySQL 未启动时自动拉起）→ prisma migrate deploy 执行未应用的迁移（不删数据）+ seed 补齐数据
-#                ⑥ 切换 current 软链到新版本 → PM2 重启
-#                ⑦ /api/health 60s 内不通则自动回滚到上一版本
-#                ⑧ 发布成功后自动挂回曾被 stop 摘掉的 Nginx 站点配置
-#   fresh        ⚠ 清库前自动备份到服务器 shared/backup → prisma migrate reset 清空数据库
-#                → 再走一遍 deploy（需输入库名确认）
+#   deploy(默认) ① 跑单测 ② 本机构建前后端 ③ 打包并校验关键文件 → 上传（约 0.5MB）
+#                ④ 服务器后台执行（断网/合上笔记本不会中断；Ctrl-C 只停止查看）：
+#                   按 lockfile 装生产依赖 → 数据库预检（本机 MySQL 未启动时自动拉起）
+#                   → 有待执行迁移时先自动备份 → prisma migrate deploy（不删数据）→ seed 补齐数据
+#                ⑤ 切换 current 软链到新版本 → PM2 重启
+#                ⑥ /api/health 60s 内未通过（或版本号不对）则自动回滚：代码 + 配置 + Nginx
+#                ⑦ 刷新 Nginx 站点、恢复曾被 stop 的站点、探测前端入口、安装每日备份定时任务
+#                正式环境（remote-release）额外要求：工作区干净、main/master 分支、不跳过测试、输入环境名确认
+#   fresh        ⚠ 清库前自动备份（失败即中止）→ prisma migrate reset 清空数据库
+#                → 再走一遍 deploy（需输入库名确认；正式环境另需 ALLOW_FRESH=1）
+#   deploy-log   查看最近一次（或指定版本）发布的完整输出；发布进行中则持续跟踪
 #   status       服务器上的当前版本 / PM2 状态 / Nginx / 磁盘 / 今日 ERROR·WARN 数 / 健康检查
 #   logs         读服务器当天日志（logs ERROR、logs WARN 2026-10-03、logs follow、logs pm2）
 #   releases     列出服务器上保留的历史版本（用于回滚）
-#   rollback     把 current 软链切回上一版本并重启（秒级；【数据库不会回退】）
-#   restart/start/stop   重启 / 启动(含 Nginx) / 停止(含 Nginx，页面下线)
+#   rollback     把 current 切回上一版本 + 恢复该版本的配置快照 + 重建 Nginx 路由（秒级；【数据库不会回退】）
+#   restart/start/stop   重启 / 启动 / 停止（stop：页面换成「维护中」，只影响本环境）
+#   migrate-status       查看数据库迁移状态（待执行 / 执行失败的迁移）
+#   migrate-resolve      迁移失败（P3009）人工处理后标记：migrate-resolve applied|rolled-back <迁移名>
 #   db-backup    在服务器执行 mysqldump → scp 拉回本地 backup/<env>/
-#   db-restore   把本地备份上传服务器并导入（需输入库名确认；恢复前自动先备份当前库）
-#   doctor       体检：版本/服务/健康检查/磁盘/今日错误数/最近备份，并比对
+#   db-restore   把本地备份上传服务器并导入（需输入库名确认；先备份当前库 → 停应用 → 清表 → 导入
+#                → 迁移到当前代码版本 → 启动应用）
+#   doctor       体检：版本/服务/健康检查/磁盘/今日错误数/最近发布/备份，并比对
 #                「本机 env 的应用配置」与「服务器 shared/.env」的差异（防改了配置忘记发布）
-#   ssl 域名     申请 Let's Encrypt 证书 + 配置 301 跳转 + 自动续期
+#   ssl 域名     申请 Let's Encrypt 证书 + 配置 301 跳转 + 自动续期（子路径部署不适用）
 #   db-remote-on/off  临时开放/关闭数据库远程访问（排查用，用完务必关闭）
 #   ssh          登录服务器（交互式）
 #   gen-crud     生成 CRUD 模块骨架（本机操作，不碰服务器）
 #   setup-hooks  启用 .githooks/pre-commit（提交前自动跑 pnpm lint && pnpm test）
 #
-# 提示：所有远程命令都不会改动数据库结构以外的业务数据，fresh 是唯一的清库操作。
+# 可选环境变量（远程命令）：SKIP_TESTS=1 / SKIP_DB_BACKUP=1 / FORCE_FRESH=1 / ALLOW_FRESH=1 /
+#   CONFIRM=<环境名> / FORCE=1 / DB_ROOT_PASS=xxx，含义见 deploy.sh 顶部注释
+# 提示：所有远程命令都不会改动数据库结构以外的业务数据，fresh / db-restore 是仅有的覆盖数据操作。
 # ------------------------------------------------------------------
 #
 # 示例:
@@ -84,12 +93,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; N='\033[0m'
-die() { echo -e "${R}✗ $*${N}" >&2; exit 1; }
+die() { echo -e "${R}✗ $*${N}" >&2; exit 1; }   # 打印错误并退出
 
+# 用法：打印顶部注释中「环境 / 用法」两段（到第一条 ---- 分隔线为止），再列出已配置的环境
 usage() {
-  sed -n '5,17p' "$0" | sed 's/^# \{0,1\}//'
-  echo ""
-  echo -e "${C}各命令的详细执行步骤见: sed -n '19,66p' sb.sh${N}"
+  awk 'NR>4 { if (/^# -{10}/) exit; print }' "$0" | sed 's/^# \{0,1\}//'
+  echo -e "${C}各命令的详细执行步骤见 sb.sh 顶部注释「每个命令实际会做什么」${N}"
   echo ""
   echo -e "${C}已配置的环境（deploy/envs/）:${N}"
   local f name
@@ -128,9 +137,11 @@ case "$ENV_NAME" in
     exec node scripts/gen-crud.mjs "$@"
     ;;
   local)
+    # 本地开发：交给 start-local.sh（默认 restart = 停旧进程后重新启动）
     exec bash start-local.sh "${CMD:-restart}" "$@"
     ;;
   remote-*)
+    # 远程环境：确认 env 文件存在后交给 deploy.sh（命令为空时 deploy.sh 默认执行 deploy）
     [ -f "deploy/envs/$ENV_NAME.env" ] || die "缺少 deploy/envs/$ENV_NAME.env（先 cp deploy/envs/remote.env.example deploy/envs/$ENV_NAME.env 后填写）"
     exec bash deploy.sh "$ENV_NAME" ${CMD:+$CMD} "$@"
     ;;

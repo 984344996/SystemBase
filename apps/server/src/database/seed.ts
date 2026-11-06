@@ -184,7 +184,8 @@ async function main() {
   await ensureConfig({ key: 'site.name', value: 'SystemBase', type: 'STRING', group: 'base', label: '站点名称', builtin: true });
 
   // ---------- 超管账号 ----------
-  // 初始密码取 .env 的 ADMIN_INITIAL_PASSWORD（默认 admin123）；只在账号不存在时生效，已存在不覆盖
+  // 初始密码取 .env 的 ADMIN_INITIAL_PASSWORD（默认 admin123）；只在账号不存在时生效，已存在不覆盖。
+  // 生产环境新建的超管必须首次登录后改密（初始密码写在配置文件里，视为已泄露）；开发/测试环境不强制
   const admin = await prisma.user.upsert({
     where: { username: 'admin' },
     update: {},
@@ -192,6 +193,7 @@ async function main() {
       username: 'admin',
       name: '超级管理员',
       password: await bcrypt.hash(ADMIN_INITIAL_PASSWORD, 10),
+      mustChangePassword: process.env.NODE_ENV === 'production',
       remark: '内置超管；最后一个启用的超管不可禁用/删除',
     },
   });

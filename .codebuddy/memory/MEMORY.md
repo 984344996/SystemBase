@@ -8,6 +8,16 @@
 - 密码规则在 `@sb/shared/password.ts` 前后端共用
 - 改了路由/权限码/模块后跑 `pnpm docs:gen`（CI 检测漂移）
 - 改 core 层后必须跑 `pnpm --filter @sb/server test:e2e`（独立库 system_base_e2e）
+- 用户偏好：脚本里每个函数/小步骤都要有中文注释（用户看不懂无注释的脚本）
+
+## 部署约定（2026-11-06 更新）
+- 远程发布在服务器后台执行（setsid nohup），日志 `shared/deploy-logs/<版本号>.log`(.rc/.pid)，`./sb.sh <env> deploy-log` 查看
+- 新增部署段变量时必须同时加进 `deploy.sh` 的 `DEPLOY_KEYS` 与 `deploy.ps1` 的 `$deployKeys`（当前含 PROTECTED）
+- `db-backup.sh backup` 最后一行固定输出 `BACKUP_FILE=<路径>`，调用方按标记提取，不要改格式
+- `/api/health` 返回 `release`（读版本目录 RELEASE），发布健康检查要求等于本次版本号
+- deploy.ps1 发往 ssh 的远程命令不能含双引号（PS 5.1 会拆坏参数），只用单引号/无引号
+- 脚本中比较版本目录一律按目录名（basename），不要拿 readlink -f 结果和字面路径比（DEPLOY_DIR 可能经过软链）
+- R5（非 root 运行/关闭 root 密码登录）、R12（关闭 8080/8081 明文端口）、异地备份需用户手动处理
 
 ## 环境事实
 - 本机 3001 端口常被 CodeBuddy Helper 进程占用（不能杀），冒烟测试用临时端口（PORT=300x node dist/main.js）

@@ -2,6 +2,35 @@
 
 ## Unreleased
 
+### 部署流程审查修复（docs/deploy-review.md）
+
+**⚠️ 行为变更（升级必读）**
+- 发布改为**服务器后台执行**：本机只跟踪日志，Ctrl-C / 断网不会中断；新增 `./sb.sh <env> deploy-log [版本号]` 查看结果
+- 有待执行迁移时**先自动备份，备份失败中止发布**（外部数据库无 mysqldump 时只提醒；`SKIP_DB_BACKUP=1` 跳过）；发布时自动安装每日数据库备份定时任务（env 应用段 `DB_BACKUP_CRON`，`off` 关闭）
+- `fresh` 先备份再停服务，**备份失败默认中止**（`FORCE_FRESH=1` 跳过）；正式环境另需 `ALLOW_FRESH=1`
+- 正式环境（`remote-release` 或部署段 `PROTECTED=true`）发布要求工作区干净、main/master 分支、不跳过测试并输入环境名（`FORCE=1` / `CONFIRM=<环境名>`）
+- 健康检查要求 `/api/health` 返回的 `release` 等于本次版本号
+- `stop` 后页面显示「503 维护中」（原来子路径部署时页面仍可打开但接口 502）
+- `db-restore` 恢复期间停应用、清空库内全部表后导入，并自动迁移到当前代码版本
+- 生产环境新建的超管 `admin` 首次登录必须修改密码
+
+**修复**
+- `db-backup` 服务器上存在过期备份时拉回本地失败（取错了输出行）
+- 打包函数在命令替换中执行导致 `set -e` 失效，残缺包可能被上传；新增打包校验
+- `fresh` 停服务后失败，服务一直处于停止状态
+- 本机并发发布两个环境时应用配置互相覆盖；新增本机构建锁
+- 发布失败 / 自动回滚 / `rollback` 不还原配置；新增 `.env.prev` 与每版本 `.env.snapshot`
+- 迁移执行一半失败后后续发布全部报 P3009；新增 `migrate-status` / `migrate-resolve` 与破坏性语句提醒
+- `rollback` 不加发布锁、不重建 Nginx 路由
+- `ssl` 在子路径共享域名模式下可能改写错误的 server 块（现直接拒绝）
+- 部署目录路径含软链时「版本号与线上相同」防护失效
+- `doctor` 配置差异比对每次崩溃（`env-diff.cjs` 语法残留）且错误被吞掉
+- Windows：`deploy.ps1` 缺少 `Invoke-Checked` 定义（发布必失败）、`init` 漏传 Nginx 脚本；`start-local.ps1` GTID 检测未带密码
+- MySQL 密码不再出现在进程参数；自动重置的 root 密码保存到 `/root/.mysql-root-pass`
+- 配置了 `IP_WHITELIST` 时本机健康检查被拦截导致每次发布回滚
+- 部署键过滤兼容 `export KEY=` 写法；修改 `SITE_PATH/SITE_DOMAIN` 后旧的共享域名注入会被清理
+- 所有部署脚本按函数/步骤补齐注释
+
 ### 部署：上传文件跨版本保留 + 超管初始密码可配置
 
 - 修复：**上传文件随发布「消失」**——文件原先写在版本目录 `releases/<时间戳>/apps/server/uploads`，发布新版本后看不到旧文件，清理旧版本时被一起删除（预发环境实测已发生）。现统一存放 `shared/uploads` 并在每次发布时软链；历史版本目录里的文件首次发布时自动合并迁移（不覆盖同名），回滚到旧版本同样可见

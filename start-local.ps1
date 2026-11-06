@@ -35,9 +35,9 @@ $runDir = Join-Path $root ".run"
 $serverLog = Join-Path $runDir "server.log"
 $webLog = Join-Path $runDir "web.log"
 
-function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Green }
-function Write-Warn2([string]$msg) { Write-Host "!! $msg" -ForegroundColor Yellow }
-function Fail([string]$msg) { Write-Host "✗ $msg" -ForegroundColor Red; exit 1 }
+function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Green }    # 步骤提示
+function Write-Warn2([string]$msg) { Write-Host "!! $msg" -ForegroundColor Yellow }   # 警告（不中断）
+function Fail([string]$msg) { Write-Host "✗ $msg" -ForegroundColor Red; exit 1 }      # 打印错误并退出
 
 # 原生命令失败即终止（不要对原生命令重定向 stderr：PS 5.1 会当作异常抛出）
 function Invoke-Checked([string]$errMsg, [scriptblock]$block) {
@@ -76,6 +76,7 @@ $serverPort = [int](& node $envTool get $envFile PORT 3000 | Select-Object -Firs
 $webPort = if ($env:SB_WEB_PORT) { [int]$env:SB_WEB_PORT } else { [int](& node $envTool get $envFile WEB_PORT 5173 | Select-Object -First 1) }
 
 # ---------- 工具 ----------
+# TCP 端口能否在 1 秒内连上
 function Test-TcpPort([string]$h, [int]$p) {
   try {
     $tcp = New-Object System.Net.Sockets.TcpClient
@@ -85,6 +86,7 @@ function Test-TcpPort([string]$h, [int]$p) {
   } catch { return $false }
 }
 
+# 监听指定端口的进程 PID 列表
 function Get-PortPids([int]$port) {
   try {
     return @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
@@ -99,10 +101,12 @@ function Test-OurProcess([int]$procId) {
     return [bool]($p.CommandLine -and $p.CommandLine.ToLower().Contains($root.ToLower()))
   } catch { return $false }
 }
+# 进程的命令行（提示端口被谁占用时显示）
 function Get-ProcessDesc([int]$procId) {
   try { return (Get-CimInstance Win32_Process -Filter "ProcessId=$procId").CommandLine } catch { return "PID $procId" }
 }
 
+# 端口被其他程序占用时拒绝启动（不杀别人的进程）
 function Assert-PortsFree {
   $busy = $false
   foreach ($port in @($serverPort, $webPort)) {
@@ -116,12 +120,14 @@ function Assert-PortsFree {
   if ($busy) { Fail "请先停止占用端口的程序后重试（本脚本不会结束非本项目的进程）" }
 }
 
+# 检查必需工具：pnpm 9.x
 function Assert-Tools {
   if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) { Fail "未找到 pnpm，请执行 corepack enable（或 npm i -g pnpm@9）" }
   $pv = [string](& pnpm -v | Select-Object -First 1)
   if ($pv -notmatch '^9\.') { Fail "需要 pnpm 9.x（当前: $pv）。执行 corepack enable，或 npm i -g pnpm@9" }
 }
 
+# 等待本机 MySQL 端口可连（最长 15 秒），未运行则提示启动方式
 function Wait-Mysql {
   if (Test-TcpPort $dbHost $dbPort) { return }
   Write-Step "等待 MySQL 就绪（${dbHost}:$dbPort）..."
@@ -132,6 +138,7 @@ function Wait-Mysql {
   Fail "MySQL 未运行。请先启动本地 MySQL 服务（管理员 PowerShell: net start mysql80 或 net start mysql）后重试"
 }
 
+# 依赖：没装过或 lockfile 比安装记录新时才 pnpm install；每次都构建共享包并生成 Prisma Client
 function Install-Deps {
   $marker = Join-Path $root "node_modules\.modules.yaml"
   $lock = Join-Path $root "pnpm-lock.yaml"
@@ -145,6 +152,7 @@ function Install-Deps {
 }
 
 # ---------- 停止 ----------
+# 停止本地前后端：先按 pid 文件结束整棵进程树，再按端口兜底（只结束本项目的进程）
 function Stop-Services {
   Write-Step "停止本地服务..."
   $stopped = $false
@@ -173,22 +181,26 @@ function Stop-Services {
 }
 
 # ---------- 数据库 ----------
+# 在后端目录执行 prisma 命令，失败即中止
 function Invoke-Prisma([string[]]$prismaArgs, [string]$errMsg) {
   Push-Location $server
   try { Invoke-Checked $errMsg { pnpm exec prisma @prismaArgs } } finally { Pop-Location }
 }
 
+# 幂等补齐种子数据（超管 / 菜单 / 权限点 / 默认任务）
 function Invoke-Seed {
   Write-Step "补齐种子数据（幂等）..."
   Invoke-Checked "种子数据初始化失败" { pnpm --filter "@sb/server" prisma:seed }
 }
 
+# 执行未应用的迁移（库不存在自动创建）+ 补齐种子数据
 function Update-Database {
   Write-Step "数据库迁移（prisma migrate deploy：只执行未应用的迁移，库不存在会自动创建）..."
   Invoke-Prisma @("migrate", "deploy") "数据库迁移失败（请确认 MySQL 已启动、账号有建库权限）"
   Invoke-Seed
 }
 
+# 清空本地库：删除全部表 → 重新执行全部迁移 → 初始化种子数据
 function Reset-Database {
   Write-Warn2 "[fresh] 清空本地数据库 $dbName 并重新执行全部迁移（数据不可恢复）..."
   Invoke-Prisma @("migrate", "reset", "--force", "--skip-seed", "--skip-generate") "数据库重置失败"
@@ -196,6 +208,7 @@ function Reset-Database {
 }
 
 # ---------- 启动 ----------
+# 隐藏窗口后台启动后端（Nest watch）与前端（Vite），输出写入 .run\*.log，PID 写入 .run\*.pid
 function Start-Services {
   New-Item -ItemType Directory -Force -Path $runDir | Out-Null
   Write-Step "启动后端（Nest :${serverPort}，watch 模式）→ .run\server.log"
@@ -222,6 +235,7 @@ function Wait-Http([string]$url, [string]$name, [string]$log, [int]$timeoutSec) 
   if (Test-Path $log) { Get-Content $log -Tail 15 -Encoding UTF8 }
 }
 
+# 启动完成后打印访问地址、账号与常用命令
 function Show-Summary {
   Write-Host ""
   Write-Host "===========================================" -ForegroundColor Cyan
@@ -235,6 +249,7 @@ function Show-Summary {
   Write-Host "===========================================" -ForegroundColor Cyan
 }
 
+# 状态：前后端是否在运行（及端口占用者）、MySQL 是否可连、健康检查结果
 function Show-Status {
   foreach ($it in @(@{ Name = "后端(Nest)"; Port = $serverPort }, @{ Name = "前端(Vite)"; Port = $webPort })) {
     $all = @(Get-PortPids $it.Port)
@@ -253,6 +268,7 @@ function Show-Status {
   } catch { Write-Host "○ 健康检查未通过" -ForegroundColor Red }
 }
 
+# 一键启动：工具检查 → 等 MySQL → 停旧进程 → 检查端口 → 依赖 → 迁移（或 fresh 清库）→ 启动 → 等就绪
 function Start-All([string]$mode) {
   Assert-Tools
   Wait-Mysql
@@ -267,6 +283,7 @@ function Start-All([string]$mode) {
 }
 
 # ---------- 数据库备份 / 恢复（Windows 无 gzip，备份为 .sql） ----------
+# 备份文件名：<库名>_<时间>[_备注]
 function Get-BackupName([string]$note = "") {
   $name = "${dbName}_$(Get-Date -Format 'yyyyMMddHHmmss')"
   if ($note) { $name = "${name}_$note" }
@@ -274,12 +291,18 @@ function Get-BackupName([string]$note = "") {
 }
 
 # ★ MySQL 8 默认开启 GTID：默认导出的 dump 含 SET @@GLOBAL.GTID_PURGED，恢复时报 ERROR 3546
+#   开启 GTID 时导出需加 --set-gtid-purged=OFF。经 cmd /c 执行并在 cmd 内丢弃 stderr
+#   （PS 5.1 对原生命令重定向 stderr 会抛异常）；密码经 MYSQL_PWD 传入
 function Get-GtidDumpOpt {
-  $mode = [string](& mysql -h $dbHost -P $dbPort -u $dbUser -N -e "SELECT @@gtid_mode" 2>$null | Select-Object -First 1)
+  $env:MYSQL_PWD = $dbPass
+  try {
+    $mode = [string](& cmd /c "mysql -h $dbHost -P $dbPort -u $dbUser -N -e `"SELECT @@gtid_mode`" 2>nul" | Select-Object -First 1)
+  } finally { $env:MYSQL_PWD = "" }
   if ($mode -match '^(ON|ON_PERMISSIVE)$') { return "--set-gtid-purged=OFF" }
   return ""
 }
 
+# 备份本地库到 backup\local\*.sql，并清理超过 KEEP_BACKUP_DAYS（默认 7）天的备份
 function Invoke-DbBackup([string]$note = "") {
   if (-not (Get-Command mysqldump -ErrorAction SilentlyContinue)) { Fail "未找到 mysqldump（请安装 MySQL 客户端并加入 PATH）" }
   if (-not (Test-Path $backupDir)) { New-Item -ItemType Directory -Force -Path $backupDir | Out-Null }
@@ -299,6 +322,7 @@ function Invoke-DbBackup([string]$note = "") {
     Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$keep) } | ForEach-Object { Remove-Item $_.FullName -Force }
 }
 
+# 用备份文件恢复本地库：输入库名确认 → 先备份当前库 → 剔除 GTID 语句 → 导入
 function Invoke-DbRestore([string]$src) {
   if (-not $src) { Fail "用法: .\sb.ps1 local db-restore backup\local\xxx.sql" }
   if (-not (Get-Command mysql -ErrorAction SilentlyContinue)) { Fail "未找到 mysql 客户端（无法恢复）" }
@@ -324,6 +348,7 @@ function Invoke-DbRestore([string]$src) {
   Write-Step "恢复完成"
 }
 
+# 列出本地备份（按时间升序，最新的在最后）
 function Show-BackupList {
   if (-not (Test-Path $backupDir)) { Write-Host "还没有备份"; return }
   Write-Host "本地备份（$backupDir）："

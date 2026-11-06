@@ -39,7 +39,8 @@
 | 前端（浏览器）日志 | `apps/server/logs/web.YYYY-MM-DD.log` | 浏览器上报，靠 `traceId` 与后端日志串联 |
 | 后端进程输出 | `.run/server.log` | `nest start --watch` 的 stdout；`./sb.sh local logs` 跟踪 |
 | 前端进程输出 | `.run/web.log` | Vite dev server 输出 |
-| 构建期临时配置 | `.run/env.production` | 由 env 剔除部署键生成，权限 600，已 gitignore |
+| 构建期临时配置 | `.run/env.<环境>.XXXXXX` | 由 env 剔除部署键生成，权限 600，每次执行独立一份、退出即删；已 gitignore |
+| 本机构建锁 | `.run/build.lock/` | 同一工作目录同时只允许一个远程发布在构建，持有进程退出后自动接管 |
 | 数据库 | 本机 MySQL `system_base` | `DATABASE_URL=mysql://root@127.0.0.1:3306/system_base`（`root` 免密） |
 | 数据库备份 | `backup/local/<时间>_<备注>.sql.gz` | 已 gitignore |
 | 上传文件 | `apps/server/uploads/` | `UPLOAD_DIR` 默认相对路径 `uploads`，相对后端运行目录 |
@@ -211,6 +212,10 @@ UPLOAD_DIR=/opt/systembase-pre/shared/uploads
 | 文件 | 说明 |
 | --- | --- |
 | `/opt/systembase-pre/shared/.env` | **应用运行配置的唯一线上来源**（权限 600），由发布包内的 `.env.production` 刷新，各版本目录内 `.env` 只是指向它的软链 |
+| `/opt/systembase-pre/shared/.env.prev` | 上一次发布或回滚前的配置（权限 600），发布失败 / 自动回滚时据此还原 |
+| `/opt/systembase-pre/releases/<版本号>/.env.snapshot` | 该版本发布时的配置快照（权限 600），`rollback` 到该版本时恢复为 `shared/.env` |
+| `/opt/systembase-pre/shared/deploy-logs/<版本号>.log` | 每次发布的完整输出（`.rc` 退出码、`.pid` 进程号），`./sb.sh <env> deploy-log` 读取，保留 20 次 |
+| `/etc/cron.d/systembase-pre-db-backup` | 每日数据库备份定时任务（发布时安装；输出在 `shared/backup/cron.log`） |
 | `/opt/systembase-pre/current/deploy/server/` | 随版本上传的服务器端脚本（发布 / 运维 / Nginx / SSL / 数据库） |
 | `/opt/systembase-pre/current/deploy/server/ecosystem.config.js` | PM2 进程定义 |
 

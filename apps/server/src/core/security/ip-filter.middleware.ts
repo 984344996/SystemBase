@@ -8,7 +8,8 @@ import { Injectable, NestMiddleware, ForbiddenException } from '@nestjs/common';
  *
  * 规则支持：精确 IP（1.2.3.4）、前缀通配（192.168.*）、IPv6 精确匹配。
  * 真实 IP 由 express 的 trust proxy（TRUST_PROXY）解析，反代后无需额外处理。
- * 注意：健康检查 /api/health 同样受限制，监控机器请加入白名单。
+ * 例外：来自本机（127.0.0.1 / ::1）的健康检查 /api/health* 不受白名单限制——发布脚本与运维探活
+ * 都走本机，否则配置白名单后每次发布都会因健康检查失败而自动回滚。外部监控机器仍需加入白名单。
  */
 @Injectable()
 export class IpFilterMiddleware implements NestMiddleware {
@@ -20,13 +21,24 @@ export class IpFilterMiddleware implements NestMiddleware {
     this.blacklist = split(process.env.IP_BLACKLIST);
   }
 
-  use(req: { ip?: string; path?: string }, _res: unknown, next: () => void): void {
+  use(req: { ip?: string; originalUrl?: string; url?: string }, _res: unknown, next: () => void): void {
     const ip = normalize(req.ip || '');
     if (!ip) return next();
     if (match(ip, this.blacklist)) throw new ForbiddenException('当前 IP 已被禁止访问');
+    if (isLoopback(ip) && isHealthPath(req.originalUrl ?? req.url ?? '')) return next();
     if (this.whitelist.length && !match(ip, this.whitelist)) throw new ForbiddenException('当前 IP 不在允许访问的名单内');
     next();
   }
+}
+
+/** 本机地址（normalize 后 IPv4-mapped 已还原为 IPv4） */
+function isLoopback(ip: string): boolean {
+  return ip === '127.0.0.1' || ip === '::1';
+}
+
+/** 健康检查路径：/api/health、/api/health/live、/api/health/ready（可带查询串） */
+function isHealthPath(url: string): boolean {
+  return /^\/(?:api\/)?health(?:[/?]|$)/.test(url);
 }
 
 function split(v: string | undefined): string[] {

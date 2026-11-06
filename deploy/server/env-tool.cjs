@@ -12,12 +12,16 @@
 const fs = require('node:fs');
 const net = require('node:net');
 
+/** 打印错误到 stderr 并以 1 退出（调用方脚本据退出码判断失败） */
 function fail(msg) {
   process.stderr.write(`${msg}\n`);
   process.exit(1);
 }
 
-/** 最小 dotenv 解析：KEY=VALUE / KEY="VALUE" / 行尾 # 注释 / CRLF */
+/**
+ * 最小 dotenv 解析：KEY=VALUE / KEY="VALUE" / KEY='VALUE' / export KEY=VALUE / 行尾 # 注释 / CRLF
+ * 带引号的值取到配对引号为止（引号内的 # 不算注释）；不带引号的值去掉「空白 + #」开始的行尾注释
+ */
 function parseEnv(file) {
   if (!fs.existsSync(file)) fail(`找不到配置文件: ${file}`);
   const out = {};
@@ -39,7 +43,10 @@ function parseEnv(file) {
   return out;
 }
 
-/** 解析失败抛 Error（由调用方决定退出还是汇总） */
+/**
+ * 解析 DATABASE_URL（mysql://user:pass@host:port/db）为 { host, port, user, password, database }
+ * 用户名/密码/库名做 URL 解码；解析失败抛 Error（由调用方决定退出还是汇总）
+ */
 function parseDb(url) {
   if (!url) throw new Error('未配置 DATABASE_URL');
   let u;
@@ -60,8 +67,14 @@ function parseDb(url) {
   };
 }
 
+/** 模板占位值：出现即视为「没填」 */
 const PLACEHOLDER = /请替换|YOUR_|CHANGE_ME|change-me/i;
 
+/**
+ * 校验生产配置（发布前本机执行一次，服务器解压后再执行一次）：
+ * NODE_ENV=production、数据库密码与 JWT_SECRET 已替换、CORS_ORIGINS 已填写、PORT 为数字。
+ * 全部问题汇总后一次性打印，不合格退出 1；合格输出 ok
+ */
 function check(file) {
   const env = parseEnv(file);
   const problems = [];
@@ -80,6 +93,10 @@ function check(file) {
   process.stdout.write('ok\n');
 }
 
+/**
+ * 每秒尝试一次 TCP 连接，连上退出 0；超过 timeoutSec 秒仍连不上退出 1。
+ * 用于发布前等待数据库端口就绪（只验证端口可达，不验证账号密码）
+ */
 function waitTcp(host, port, timeoutSec) {
   const deadline = Date.now() + timeoutSec * 1000;
   const attempt = () => {
@@ -100,6 +117,7 @@ function waitTcp(host, port, timeoutSec) {
   attempt();
 }
 
+// ---------- 命令分发 ----------
 const [cmd, a, b, c] = process.argv.slice(2);
 switch (cmd) {
   case 'check':

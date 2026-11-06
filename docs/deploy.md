@@ -46,7 +46,8 @@ cp deploy/envs/local.env.example deploy/envs/local.env    # 首次：确认 DATA
 
 ## 方式二：服务器一键部署（PM2 + Nginx，推荐）
 
-本机构建、打包上传，服务器按 lockfile 安装生产依赖 → 迁移 → 切换版本 → 重启 → 健康检查，**失败自动回滚**。
+本机构建、打包上传，服务器**后台**按 lockfile 安装生产依赖 → 迁移前自动备份 → 迁移 → 切换版本 → 重启 → 健康检查，**失败自动回滚**（代码 + 配置 + Nginx）。
+发布在服务器后台执行：本机断网、合上笔记本或 Ctrl-C 都不会中断，随时可用 `deploy-log` 重新查看。
 支持 Ubuntu / Debian / CentOS / OpenCloudOS / TencentOS；Mac/Linux 用 `sb.sh`，Windows 用 `sb.ps1`（命令一致）。
 下面以预发布环境 `remote-pre` 为例（正式环境把 `remote-pre` 换成 `remote-release` 即可）。
 
@@ -63,24 +64,50 @@ ssh-copy-id root@服务器IP
 ```
 
 `init` 会：安装 Node 20 / pnpm 9 / PM2 / Nginx /（库在本机时）MySQL 8 → 按 `DATABASE_URL` 建库建账号 → 生成 Nginx 站点 → 放行防火墙 80/443 → PM2 开机自启 → 执行一次发布。可重复执行。
-MySQL root 免密不可用时：在 env 部署段填 `DB_ROOT_PASS`（或临时 `DB_ROOT_PASS='root密码' ./sb.sh remote-pre init`）。
+MySQL root 免密不可用时：在 env 部署段填 `DB_ROOT_PASS`（或临时 `DB_ROOT_PASS='root密码' ./sb.sh remote-pre init`）；密码以文件上传、用完即删，不会出现在进程列表里。
+生产环境（`NODE_ENV=production`）首次创建的超管 `admin` 登录后**必须先修改密码**。
 
 ### 日常命令
 
 | 命令 | 作用 |
 |---|---|
-| `./sb.sh remote-pre deploy` | 发布：单测 → 构建 → 打包（约 0.5MB）→ 上传 → 服务器安装依赖/迁移/seed/切换/重启/健康检查 |
-| `./sb.sh remote-pre status` | 当前版本、PM2 状态、Nginx/MySQL、健康检查、今日 ERROR/WARN 数、磁盘 |
+| `./sb.sh remote-pre deploy` | 发布：单测 → 构建 → 打包并校验 → 上传 → 服务器后台安装依赖/备份/迁移/seed/切换/重启/健康检查 |
+| `./sb.sh remote-pre deploy-log [版本号]` | 查看最近一次（或指定版本）发布的完整输出；发布还在进行时持续跟踪到结束 |
+| `./sb.sh remote-pre status` | 当前版本、PM2 状态、Nginx/MySQL、是否处于维护页、健康检查、今日 ERROR/WARN 数、磁盘 |
 | `./sb.sh remote-pre logs` | 今日应用日志最近 100 行；`logs ERROR`、`logs WARN 2026-09-29`、`logs follow`、`logs pm2`（启动失败/崩溃输出） |
-| `./sb.sh remote-pre releases` / `rollback [版本号]` | 版本列表 / 回滚到上一版本（或指定版本），秒级完成，数据库不回退 |
-| `./sb.sh remote-pre restart` / `start` / `stop` | 重启后端 / 启动（含 Nginx）/ 停止（含 Nginx，页面下线） |
-| `./sb.sh remote-pre ssl 域名` | Let's Encrypt 证书 + 301 跳转 + 自动续期；完成后把 `CORS_ORIGINS` 改为 `https://域名` 再发布 |
+| `./sb.sh remote-pre releases` / `rollback [版本号]` | 版本列表 / 回滚到上一版本（或指定版本）：代码 + 该版本发布时的配置 + Nginx 路由，秒级完成，**数据库不回退** |
+| `./sb.sh remote-pre restart` / `start` / `stop` | 重启后端 / 启动 / 停止（stop 后页面显示「维护中」，子路径部署同样生效；只影响本环境） |
+| `./sb.sh remote-pre migrate-status` | 查看数据库迁移状态（待执行 / 执行失败） |
+| `./sb.sh remote-pre migrate-resolve applied\|rolled-back <迁移名>` | 迁移执行一半失败（P3009）时，人工补齐或撤销后标记结果，解除发布阻塞 |
+| `./sb.sh remote-pre ssl 域名` | Let's Encrypt 证书 + 301 跳转 + 自动续期；完成后把 `CORS_ORIGINS` 改为 `https://域名` 再发布（子路径部署不适用，证书由共享域名站点管理） |
 | `./sb.sh remote-pre db-remote-on [IP]` / `db-remote-off` | 临时开放 / 关闭数据库远程访问（排查用，用完关闭；拒绝对 root 开放） |
 | `./sb.sh remote-pre db-backup [备注]` | 备份服务器数据库：服务器端 mysqldump → 拉回本地 `backup/remote-pre/`（服务器保留 7 天，可用 `KEEP_BACKUP_DAYS` 调整） |
-| `./sb.sh remote-pre db-restore <文件>` | 用本地备份文件恢复服务器数据库（**需输入库名确认**，服务器恢复前会自动先备份当前库） |
-| `./sb.sh remote-pre doctor` | 环境体检：版本/构建信息、PM2/Nginx/MySQL、健康检查、磁盘、今日 ERROR/WARN、最近备份，并比对**本地 env 与服务器 `shared/.env` 的配置差异** |
-| `./sb.sh remote-pre fresh` | **清空远程数据库**后重新发布（需输入库名确认；清库前自动备份到服务器 `shared/backup`） |
+| `./sb.sh remote-pre db-restore <文件>` | 用本地备份文件恢复服务器数据库（**需输入库名确认**；服务器先备份当前库 → 停应用 → 清表 → 导入 → 迁移到当前代码版本 → 启动应用） |
+| `./sb.sh remote-pre doctor` | 环境体检：版本/构建信息、PM2/Nginx/MySQL、健康检查、磁盘、今日 ERROR/WARN、最近一次发布、备份与每日备份任务，并比对**本地 env 与服务器 `shared/.env` 的配置差异** |
+| `./sb.sh remote-pre fresh` | **清空远程数据库**后重新发布（需输入库名确认；清库前自动备份，备份失败即中止；正式环境另需 `ALLOW_FRESH=1`） |
 | `./sb.sh remote-pre ssh` | 登录服务器 |
+
+### 正式环境保护
+
+`remote-release`（或 env 部署段 `PROTECTED=true` 的环境）在 `deploy` / `init` / `fresh` 时额外要求：
+
+- 工作区没有未提交的改动（`git status`）、当前在 `main` / `master` 分支、没有设置 `SKIP_TESTS=1`——任一不满足即拒绝，`FORCE=1` 可跳过
+- 输入环境名确认；`stop` / `rollback` / `migrate-resolve` 也需确认。脚本或 CI 中用 `CONFIRM=remote-release` 跳过交互
+- `fresh` 必须另外设置 `ALLOW_FRESH=1`
+
+发布包的 `RELEASE` 中 `commit` 带 `-dirty` 后缀表示发布时有未提交的改动。
+
+### 可选环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `SKIP_TESTS=1` | 跳过发布前单测（正式环境不允许） |
+| `SKIP_DB_BACKUP=1` | 跳过服务器端「迁移前自动备份」（外部数据库已有云备份时可用） |
+| `FORCE_FRESH=1` | fresh 清库前备份失败时仍继续清库 |
+| `ALLOW_FRESH=1` / `CONFIRM=<环境名>` / `FORCE=1` | 见上方「正式环境保护」 |
+| `DB_ROOT_PASS=xxx` | init 建库用的 MySQL root 密码（优先于 env 部署段） |
+
+Windows 用 `$env:XXX='1'` 设置（`SKIP_TESTS` 对应参数 `-SkipTests`）。
 
 ### 数据库备份与恢复
 
@@ -91,7 +118,9 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 ```
 
 - 备份在**服务器**执行（`mysqldump --single-transaction`，不锁表），完成后 `scp` 回本地；服务器 `shared/backup` 同时保留一份并按 7 天滚动清理
-- 恢复是危险操作：必须输入**数据库名**确认；服务器脚本在恢复前会自动对当前库做一次备份（文件名带 `auto-before-restore`）
+- **自动备份**：每次发布有待执行的迁移时先备份（`auto-before-migrate`，失败即中止发布）；`fresh` 清库前备份（`auto-before-fresh`）；发布时自动安装每日定时备份（`/etc/cron.d/<APP_NAME>-db-backup`，默认每天 3 点，env 应用段 `DB_BACKUP_CRON` 可改时间或设为 `off`）
+- ⚠ 服务器备份与数据库在**同一台机器**：机器故障会一起丢失。重要数据请定期 `db-backup` 拉回本地，或另行同步到对象存储/其他机器
+- 恢复是危险操作：必须输入**数据库名**确认；服务器先对当前库做一次备份（`auto-before-restore`），恢复期间应用**暂停服务**，库内现有表会被全部删除后再导入，导入后自动执行 `migrate deploy` 把结构对齐到当前代码（备份比代码新时会提示发布对应版本）
 - 本地开发库同样可备份：`./sb.sh local db-backup [备注]` / `./sb.sh local db-restore <文件>` / `./sb.sh local db-list`
 - `backup/` 目录已被 gitignore（含业务数据，勿提交）
 
@@ -119,24 +148,33 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 /opt/systembase/                   env 文件里的 DEPLOY_DIR
 ├── current -> releases/20260930120000     Nginx 与 PM2 都指向这里，切换版本 = 改软链
 ├── releases/
-│   ├── 20260930120000/            每次发布一个目录（含 RELEASE：环境/构建时间/机器/commit）
+│   ├── 20260930120000/            每次发布一个目录（含 RELEASE：版本号/环境/构建时间/机器/commit；
+│   │                              .env.snapshot：该版本发布时的配置，rollback 时恢复）
 │   └── 20260929180000/            保留最近 KEEP_RELEASES 个（默认 5），用于回滚
 ├── releases.log                   发布 / 回滚记录
 └── shared/                        跨版本共享
-    ├── .env                       生产配置（每次发布用 env 文件的应用段覆盖，权限 600）
+    ├── .env / .env.prev           生产配置 / 上一次发布或回滚前的配置（权限 600）
     ├── logs/app.YYYY-MM-DD.log    应用日志（各版本 apps/server/logs 软链到这里）
-    └── pm2/out.log, error.log     PM2 捕获的进程输出（启动失败、崩溃）
+    ├── pm2/out.log, error.log     PM2 捕获的进程输出（启动失败、崩溃）
+    ├── uploads/                   上传文件
+    ├── backup/                    数据库备份（保留 7 天）
+    └── deploy-logs/<版本号>.log   每次发布的完整输出（deploy-log 命令读取，保留 20 次）
 ```
 
 ### 发布流程与失败处理
 
 | 阶段 | 失败时 |
 |---|---|
-| 本地校验配置 / 单测 / 构建 | 不上传，线上无影响 |
-| 服务器解压、安装依赖、迁移、seed | 删除半成品目录，**线上版本不变** |
-| 切换软链 + PM2 重启 → 60s 内 `/api/health` 未通过 | **自动切回上一版本**并重启；失败版本改名 `.failed` 保留现场 |
+| 本地校验配置 / 单测 / 构建 / 打包校验 | 不上传，线上无影响 |
+| 服务器解压、安装依赖、迁移前备份、迁移、seed | 删除半成品目录、还原配置，**线上版本不变**（fresh 已停的服务会重新拉起） |
+| 切换软链 + PM2 重启 → 60s 内 `/api/health` 未通过（或返回的版本号不是本次的） | **自动回滚**：配置、代码、Nginx 路由都回到上一版本；失败版本改名 `.failed` 保留现场 |
+| Nginx 刷新失败 | 本次改了 `SITE_PORT/SITE_DOMAIN/SITE_PATH` → 同样自动回滚；没改 → 沿用现有配置并警告 |
+| 本机断网 / Ctrl-C | 服务器继续执行，`./sb.sh <env> deploy-log` 查看结果 |
 
-注意：迁移在切换前执行，自动回滚**不会回退数据库**。改表时遵循「先加后删」（新版本先兼容旧结构，下个版本再删旧列），保证回滚后旧代码仍可运行。
+注意：迁移在切换前执行，自动回滚**不会回退数据库**。改表时遵循「先加后删」（新版本先兼容旧结构，下个版本再删旧列），保证回滚后旧代码仍可运行；迁移含 `DROP` / `RENAME` / `MODIFY` 等语句时发布日志会醒目提示。
+迁移执行到一半失败（MySQL 的 DDL 不支持事务）后，后续发布会被 Prisma 拒绝（P3009）：用 `migrate-status` 查看，用迁移前备份恢复或手工补齐，再 `migrate-resolve applied|rolled-back <迁移名>`。
+
+fork 单实例模式下，每次发布 / 回滚后端会有数秒不可用（PM2 先停旧进程再起新进程），静态页面不受影响。
 
 ### 与参考实现的差异
 

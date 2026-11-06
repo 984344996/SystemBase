@@ -31,10 +31,10 @@ ENV_TOOL="$ROOT/deploy/server/env-tool.cjs"
 RUN_DIR="$ROOT/.run"
 
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; N='\033[0m'
-info() { echo -e "${G}==> $*${N}"; }
-warn() { echo -e "${Y}!! $*${N}"; }
-die()  { echo -e "${R}✗ $*${N}" >&2; exit 1; }
-usage() { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+info() { echo -e "${G}==> $*${N}"; }           # 步骤提示
+warn() { echo -e "${Y}!! $*${N}"; }            # 警告（不中断）
+die()  { echo -e "${R}✗ $*${N}" >&2; exit 1; }  # 打印错误并退出
+usage() { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }   # 打印顶部注释中的用法
 
 command -v node >/dev/null 2>&1 || die "需要 Node.js ≥ 20"
 mkdir -p deploy/envs
@@ -65,17 +65,23 @@ case "$DB_HOST" in localhost|127.0.0.1) ;; *) die "DATABASE_URL 指向 ${DB_HOST
 SERVER_PORT="$(node "$ENV_TOOL" get "$ENV_FILE" PORT 3000)"
 WEB_PORT="${SB_WEB_PORT:-$(node "$ENV_TOOL" get "$ENV_FILE" WEB_PORT 5173)}"
 
+# 监听指定 TCP 端口的进程 PID（可能多个）
 port_pids() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null || true; }
+# 进程的工作目录（Linux 读 /proc，macOS 用 lsof）
 pid_cwd() {
   if [ -e "/proc/$1/cwd" ]; then readlink "/proc/$1/cwd" 2>/dev/null
   else lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'; fi
 }
 # 只认工作目录在本项目内的进程：端口可能被别的项目占用，不能误杀
 is_ours() { case "$(pid_cwd "$1")" in "$ROOT"|"$ROOT"/*) return 0 ;; *) return 1 ;; esac; }
+# 占用端口的「本项目」进程（可以安全结束）
 our_port_pids() { local p; for p in $(port_pids "$1"); do is_ours "$p" && echo "$p"; done; return 0; }
+# 占用端口的「其他程序」进程（不会结束，只提示）
 foreign_port_pids() { local p; for p in $(port_pids "$1"); do is_ours "$p" || echo "$p"; done; return 0; }
+# 在后端目录执行 prisma 命令（读取 apps/server/.env → deploy/envs/local.env）
 prisma() { (cd "$SERVER" && pnpm exec prisma "$@"); }
 
+# 检查必需工具：pnpm 9.x、lsof
 ensure_tools() {
   command -v pnpm >/dev/null 2>&1 || die "未找到 pnpm，请执行 corepack enable（或 npm i -g pnpm@9）"
   local pv; pv="$(pnpm -v 2>/dev/null || true)"
@@ -83,12 +89,14 @@ ensure_tools() {
   command -v lsof >/dev/null 2>&1 || die "需要 lsof（用于按端口停止进程）"
 }
 
+# 等待本机 MySQL 端口可连（最长 15 秒），未运行则提示启动方式
 wait_mysql() {
   node "$ENV_TOOL" wait-tcp "$DB_HOST" "$DB_PORT" 1 && return 0
   info "等待 MySQL 就绪（$DB_HOST:${DB_PORT}）..."
   node "$ENV_TOOL" wait-tcp "$DB_HOST" "$DB_PORT" 15 || die "MySQL 未运行。请先启动（如 brew services start mysql）后重试"
 }
 
+# 依赖：没装过或 lockfile 比安装记录新时才 pnpm install；每次都构建共享包并生成 Prisma Client
 ensure_deps() {
   if [ ! -d node_modules ] || [ pnpm-lock.yaml -nt node_modules/.modules.yaml ]; then
     info "安装依赖（pnpm install）..."
@@ -100,6 +108,7 @@ ensure_deps() {
 }
 
 # ---------- 停止 ----------
+# 停止本地前后端：先按 pid 文件结束整个进程组，再按端口兜底（只结束本项目的进程）
 stop_services() {
   info "停止本地服务..."
   local stopped=0 name pid port pids
@@ -138,6 +147,7 @@ assert_ports_free() {
 }
 
 # ---------- 数据库 ----------
+# 执行未应用的迁移（库不存在自动创建）+ 幂等补齐种子数据
 db_migrate() {
   info "数据库迁移（prisma migrate deploy：只执行未应用的迁移，库不存在会自动创建）..."
   prisma migrate deploy
@@ -145,6 +155,7 @@ db_migrate() {
   pnpm --filter @sb/server prisma:seed
 }
 
+# 清空本地库：删除全部表 → 重新执行全部迁移 → 初始化种子数据
 db_fresh() {
   warn "[fresh] 清空本地数据库 $DB_NAME 并重新执行全部迁移（数据不可恢复）..."
   prisma migrate reset --force --skip-seed --skip-generate
@@ -153,6 +164,7 @@ db_fresh() {
 }
 
 # ---------- 启动 ----------
+# 后台启动后端（Nest watch）与前端（Vite），输出写入 .run/*.log，PID 写入 .run/*.pid
 start_services() {
   mkdir -p "$RUN_DIR"
   # set -m：后台进程各自独立成进程组，stop 时可整组结束（含 watch 模式派生的子进程）
@@ -167,6 +179,7 @@ start_services() {
   set +m
 }
 
+# 轮询 URL 直到有 HTTP 响应：$1=URL $2=名称 $3=日志文件（超时时打印末尾） $4=超时秒数
 wait_http() {
   local url="$1" name="$2" log="$3" timeout="$4" i code
   info "等待${name}就绪..."
@@ -180,6 +193,7 @@ wait_http() {
   return 1
 }
 
+# 启动完成后打印访问地址、账号与常用命令
 print_summary() {
   echo ""
   echo -e "${C}==========================================${N}"
@@ -193,6 +207,7 @@ print_summary() {
   echo -e "${C}==========================================${N}"
 }
 
+# 状态：前后端是否在运行（及端口占用者）、MySQL 是否可连、健康检查结果
 show_status() {
   local pair name port pids
   for pair in "后端(Nest):$SERVER_PORT" "前端(Vite):$WEB_PORT"; do
@@ -210,6 +225,8 @@ show_status() {
   [ "$code" = 200 ] && echo -e "${G}●${N} 健康检查正常" || echo -e "${R}○${N} 健康检查未通过（HTTP ${code:-无响应}）"
 }
 
+# 一键启动：工具检查 → 等 MySQL → 停旧进程 → 检查端口 → 依赖 → 迁移（或 fresh 清库）→ 启动 → 等就绪
+#   $1 = start | fresh
 start_all() {
   local mode="$1"
   ensure_tools
@@ -225,6 +242,7 @@ start_all() {
 }
 
 # ---------- 数据库备份 / 恢复 ----------
+# mysql / mysqldump 通用连接参数（密码经 MYSQL_PWD 传入）
 mysql_args() { echo "-h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} --default-character-set=utf8mb4"; }
 
 # ★ MySQL 8 默认开启 GTID：默认导出的 dump 含 SET @@GLOBAL.GTID_PURGED，恢复时会报
@@ -237,6 +255,8 @@ gtid_dump_opt() {
 # 兼容历史备份：旧 dump 里的 GTID 语句在恢复时会失败，导入前剔除（不影响数据）
 strip_gtid() { sed -E '/^SET @@(GLOBAL\.GTID_PURGED|SESSION\.SQL_LOG_BIN|SESSION\.GTID_NEXT)/d'; }
 
+# 备份本地库到 backup/local/<库名>_<时间>[_备注].sql.gz，并清理超过 KEEP_BACKUP_DAYS（默认 7）天的备份
+#   $1 = 备注（可空）
 db_backup() {
   command -v mysqldump >/dev/null 2>&1 || die "本机未安装 mysqldump（brew install mysql-client 或安装 MySQL 后重试）"
   mkdir -p "$BACKUP_DIR"
@@ -255,6 +275,8 @@ db_backup() {
   find "$BACKUP_DIR" -name "*.sql.gz" -type f -mtime +"${KEEP_BACKUP_DAYS:-7}" -delete 2>/dev/null || true
 }
 
+# 用备份文件恢复本地库：输入库名确认 → 先备份当前库 → 导入（.sql 或 .sql.gz）
+#   $1 = 备份文件路径（也可只写 backup/local 下的文件名）
 db_restore() {
   command -v mysql >/dev/null 2>&1 || die "本机未安装 mysql 客户端（无法恢复）"
   local src="${1:?用法: ./sb.sh local db-restore backup/local/xxx.sql.gz}"
@@ -272,6 +294,7 @@ db_restore() {
   info "恢复完成"
 }
 
+# 列出本地备份（按时间升序，最新的在最后）
 db_list() {
   [ -d "$BACKUP_DIR" ] || { echo "还没有备份"; return 0; }
   echo "本地备份（$BACKUP_DIR）："

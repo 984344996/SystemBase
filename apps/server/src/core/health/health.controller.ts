@@ -1,14 +1,30 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import { Response } from 'express';
 import { ConfigService } from '@nestjs/config';
-import { accessSync, constants, existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { Public } from '../security/public.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppLogger } from '../logger/logger.service';
 
 /**
+ * 当前运行的发布版本号：读取发布包根目录 RELEASE 文件中的 release=<14位时间戳>。
+ * 进程工作目录为 <版本目录>/apps/server，RELEASE 在其上两级。
+ * 发布脚本用它确认健康检查打到的是新进程（而不是没被替换掉的旧进程）；
+ * 本地开发没有该文件，返回 undefined（响应中不输出该字段）
+ */
+export function readRelease(cwd = process.cwd()): string | undefined {
+  try {
+    return /^release=(\d{14})\s*$/m.exec(readFileSync(resolve(cwd, '../../RELEASE'), 'utf8'))?.[1];
+  } catch {
+    return undefined;
+  }
+}
+const RELEASE = readRelease();
+
+/**
  * 健康检查（全部公开）：
- *   GET /api/health        综合健康（数据库）：脚本与外部探活用，依赖故障返回 503
+ *   GET /api/health        综合健康（数据库 + 版本号）：脚本与外部探活用，依赖故障返回 503
  *   GET /api/health/live   存活：进程级，恒 200（不查依赖，用于重启策略判断）
  *   GET /api/health/ready  就绪：数据库 + Redis（仅 LOCK_DRIVER=redis 时）+ 日志目录可写，不可服务时 503
  */
@@ -35,7 +51,7 @@ export class HealthController {
     }
     // 探活必须以 HTTP 状态码表达结果：探活方(curl -sf 等)只看状态码，恒 200 会让故障被掩盖
     if (!healthy) res.status(HttpStatus.SERVICE_UNAVAILABLE);
-    return { status: healthy ? 'ok' : 'degraded', checks, timestamp: new Date().toISOString() };
+    return { status: healthy ? 'ok' : 'degraded', checks, release: RELEASE, timestamp: new Date().toISOString() };
   }
 
   /** 存活探针：只要进程还在响应就是 200（用于判断是否该重启，而非是否该接流量） */
