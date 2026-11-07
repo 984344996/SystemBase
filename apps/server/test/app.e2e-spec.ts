@@ -78,7 +78,7 @@ describe('App E2E（主链路冒烟）', () => {
         expect(typeof res.body.data.total).toBe('number');
       }));
 
-  it('创建角色 → 201；预检重复 → 400', async () => {
+  it('创建角色 → 201；重复 → 409 + 业务码 40901（预检与并发兜底口径一致）', async () => {
     const server = app.getHttpServer();
     const payload = { code: roleCode, name: 'E2E 测试角色', remark: 'e2e' };
 
@@ -88,12 +88,13 @@ describe('App E2E（主链路冒烟）', () => {
       .send(payload)
       .expect(201);
 
-    // 预检重复：400（普通 BadRequestException）；竞态兜底（P2002→40901）在单测覆盖
-    await request(server)
+    // 预检重复与并发撞唯一约束（P2002）统一返回 409 / 40901，前端按业务码识别「重复」
+    const dup = await request(server)
       .post('/api/roles')
       .set('Authorization', `Bearer ${adminToken}`)
       .send(payload)
-      .expect(400);
+      .expect(409);
+    expect(dup.body.code).toBe(BizCode.DUPLICATE);
   });
 
   it('白名单校验：提交未知字段 → 400（forbidNonWhitelisted）', () =>
@@ -133,5 +134,32 @@ describe('App E2E（主链路冒烟）', () => {
       .expect(404);
     expect(res.body.code).toBe(404);
     expect(res.body.message).toContain('不存在');
+  });
+
+  it('菜单下发：隐藏菜单（visible=false）仍返回（前端只注册路由、不显示在侧栏），停用菜单不返回', async () => {
+    const auth = { Authorization: `Bearer ${adminToken}` };
+    const create = (name: string, extra: Record<string, unknown>) =>
+      request(app.getHttpServer())
+        .post('/api/menus')
+        .set(auth)
+        .send({ parentId: 0, name, type: 'MENU', path: `/e2e/${name}`, component: 'dashboard/Dashboard', sort: 999, ...extra })
+        .expect(201)
+        .then((r) => r.body.data.id as number);
+    const hiddenId = await create(`hidden_${stamp}`, { visible: false });
+    const disabledId = await create(`disabled_${stamp}`, { status: 'DISABLED' });
+    try {
+      const res = await request(app.getHttpServer()).get('/api/auth/menus').set(auth).expect(200);
+      const flat: Array<{ id: number; visible: boolean }> = [];
+      const walk = (nodes: Array<{ id: number; visible: boolean; children?: unknown[] }>) =>
+        nodes.forEach((n) => {
+          flat.push(n);
+          walk((n.children as typeof nodes) || []);
+        });
+      walk(res.body.data);
+      expect(flat.find((n) => n.id === hiddenId)?.visible).toBe(false);
+      expect(flat.some((n) => n.id === disabledId)).toBe(false);
+    } finally {
+      for (const id of [hiddenId, disabledId]) await request(app.getHttpServer()).delete(`/api/menus/${id}`).set(auth);
+    }
   });
 });

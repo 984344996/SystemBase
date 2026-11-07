@@ -2,12 +2,16 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { withUniqueViolation } from '../../core/prisma/prisma-error.util';
 import { AppLogger } from '../../core/logger/logger.service';
+import { EventBusService } from '../../core/redis/event-bus.service';
 import { CreateConfigDto, QueryConfigDto, UpdateConfigDto } from './config.dto';
+import { duplicate } from '../../core/filter/business.exception';
 
 export type ConfigType = 'STRING' | 'NUMBER' | 'BOOL' | 'JSON';
 
-/** 缓存：配置读多写少，进程内缓存 60s（变更时立即失效） */
+/** 缓存：配置读多写少，进程内缓存 60s（变更时经事件广播让所有实例立即失效） */
 const CACHE_TTL_MS = 60_000;
+/** 参数缓存失效事件主题：payload 为参数键 */
+const TOPIC = 'config:invalidate';
 
 /**
  * 系统参数：运行时可改的配置（不必改 env 重启）。
@@ -20,7 +24,11 @@ export class ConfigService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly logger: AppLogger,
-  ) {}
+    private readonly bus: EventBusService,
+  ) {
+    // 本实例与其他实例的失效事件都在这里处理（未启用 Redis 时只有本实例）
+    this.bus.subscribe(TOPIC, (key) => this.cache.delete(key));
+  }
 
   async list(query: QueryConfigDto) {
     const rows = await this.prisma.sysConfig.findMany({
@@ -40,7 +48,7 @@ export class ConfigService {
 
   async create(dto: CreateConfigDto) {
     const exists = await this.prisma.sysConfig.findUnique({ where: { key: dto.key } });
-    if (exists) throw new BadRequestException(`参数键「${dto.key}」已存在`);
+    if (exists) throw duplicate(`参数键「${dto.key}」已存在`);
     this.assertValue(dto.value, dto.type);
     const created = await withUniqueViolation(
       () => this.prisma.sysConfig.create({ data: dto }),
@@ -116,8 +124,9 @@ export class ConfigService {
     }
   }
 
+  /** 失效某个参数的缓存：本实例立即生效，并广播给其他实例 */
   private invalidate(key: string): void {
-    this.cache.delete(key);
+    this.bus.publish(TOPIC, key);
   }
 
   private toBool(v: string): boolean | undefined {

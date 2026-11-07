@@ -8,16 +8,37 @@
     "dev:server": "pnpm --filter @sb/server dev",
     "dev:web": "pnpm --filter @sb/web dev",
     "build": "pnpm --filter @sb/shared build && pnpm --filter @sb/server build && pnpm --filter @sb/web build",
-    "test": "pnpm --filter @sb/server test",
+    "test": "pnpm --filter @sb/server test && pnpm --filter @sb/web test",
     "docs:gen": "node scripts/gen-docs.mjs",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint && eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"apps/*/src/**/*.{ts,vue}\" \"apps/server/test/**/*.ts\" \"packages/*/src/**/*.ts\"",
+    "format:check": "prettier --check \"apps/*/src/**/*.{ts,vue}\" \"apps/server/test/**/*.ts\" \"packages/*/src/**/*.ts\""
   },
   "devDependencies": {
-    "concurrently": "^9.0.1"
+    "@eslint/js": "^9.15.0",
+    "concurrently": "^9.0.1",
+    "eslint": "^9.15.0",
+    "eslint-plugin-vue": "^9.31.0",
+    "globals": "^15.12.0",
+    "prettier": "^3.3.3",
+    "typescript-eslint": "^8.15.0"
   },
   "engines": {
     "node": ">=20.10",
     "pnpm": ">=9 <10"
   },
-  "packageManager": "pnpm@9.15.0"
+  "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "overrides": {
+      "multer@2": "^2.5.0",
+      "lodash@4": "^4.18.1",
+      "body-parser@1": "^1.20.9",
+      "qs@6": "^6.17.1",
+      "js-yaml@4": "^4.3.2",
+      "uuid@11": "^11.1.1",
+      "source-map-js@1": "^1.2.2",
+      "follow-redirects@1": "^1.16.2"
+    }
+  }
 }

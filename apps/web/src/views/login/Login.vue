@@ -8,15 +8,15 @@
       <div class="login-sub">前后端分离基础框架 · 管理端</div>
       <el-form :model="form" size="large" @keyup.enter="submit">
         <el-form-item>
-          <el-input v-model="form.username" placeholder="用户名" :prefix-icon="User" />
+          <el-input v-model="form.username" placeholder="用户名"><template #prefix><MenuIcon name="User" /></template></el-input>
         </el-form-item>
         <el-form-item>
-          <el-input v-model="form.password" type="password" placeholder="密码" show-password :prefix-icon="Lock" />
+          <el-input v-model="form.password" type="password" placeholder="密码" show-password><template #prefix><MenuIcon name="Lock" /></template></el-input>
         </el-form-item>
         <!-- 验证码：服务端 LOGIN_CAPTCHA=on 或失败多次（auto）时才会返回，否则不显示 -->
         <el-form-item v-if="captcha">
           <div class="captcha-row">
-            <el-input v-model="form.captchaCode" placeholder="验证码" :prefix-icon="Key" />
+            <el-input v-model="form.captchaCode" placeholder="验证码"><template #prefix><MenuIcon name="Key" /></template></el-input>
             <!-- 用 <img> 渲染 SVG：img 里的 SVG 不执行脚本，避免 v-html 注入风险（token 在 localStorage，XSS 可直接读走） -->
             <img class="captcha-img" title="点击刷新" :src="captchaSrc" alt="验证码" @click="loadCaptcha" />
           </div>
@@ -33,9 +33,10 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { isAxiosError } from "axios";
-import { User, Lock, Key } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
 import { authApi, type Captcha } from "@/api/auth";
+import { BizCode } from "@sb/shared";
+import { bizCodeOf } from "@/utils/request";
 
 const auth = useAuthStore();
 const router = useRouter();
@@ -69,14 +70,19 @@ async function submit() {
       captchaCode: form.captchaCode || undefined,
     });
     if (auth.passwordExpired) ElMessage.warning("您的密码已超过有效期，请尽快修改");
-    router.push((route.query.redirect as string) || "/dashboard");
+    // 回到登录前的页面：只接受站内路径（以 / 开头且不是 //），防止被构造成跳转到其他网站
+    const redirect = route.query.redirect as string | undefined;
+    router.push(redirect && redirect.startsWith("/") && !redirect.startsWith("//") && !redirect.startsWith("/login") ? redirect : "/dashboard");
   } catch (e) {
     // 401（用户名或密码错误）请求拦截器不弹提示，由登录页展示；其余错误拦截器已提示
     if (isAxiosError(e) && e.response?.status === 401) {
       ElMessage.error((e.response.data as { message?: string })?.message || "用户名或密码错误");
     }
-    // 412：服务端要求验证码（失败次数过多或强制开启）→ 刷新一张
-    if (isAxiosError(e) && e.response?.status === 412) await loadCaptcha();
+    // 需要验证码（业务码 42801：失败次数过多或强制开启）→ 刷新一张；
+    // 已经在填验证码时任何失败也要换一张（验证码一次性，校验过即失效）
+    if (bizCodeOf(e) === BizCode.NEED_CAPTCHA || captcha.value) {
+      await loadCaptcha();
+    }
   } finally {
     loading.value = false;
   }
@@ -93,7 +99,7 @@ async function submit() {
 }
 .login-card {
   width: 380px;
-  background: rgba(255, 255, 255, 0.96);
+  background: var(--sb-glass-bg);
   border-radius: 12px;
   padding: 40px 36px 28px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
@@ -104,7 +110,7 @@ async function submit() {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #12365f;
+  color: var(--sb-brand-title);
 }
 .dot {
   width: 12px;
@@ -114,7 +120,7 @@ async function submit() {
 }
 .login-sub {
   margin: 8px 0 28px;
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 .login-btn {
@@ -129,7 +135,7 @@ async function submit() {
 .captcha-img {
   flex: 0 0 120px;
   height: 40px;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--el-border-color);
   border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
@@ -143,7 +149,7 @@ async function submit() {
 .login-tip {
   margin-top: 18px;
   text-align: center;
-  color: #aab4c0;
+  color: var(--el-text-color-placeholder);
   font-size: 12px;
 }
 </style>

@@ -8,12 +8,16 @@
 # 删除示例模块
 rm -rf apps/server/src/modules/example
 # 在 app.module.ts 中移除 ExampleModule 导入
+# 在 seed.ts 中删除「示例数据」区块（示例任务；不删也会因找不到处理器被自动暂停）
 ```
+
+框架内置的「系统数据清理」任务在 `modules/job/system-cleanup.job.ts`，不受删除 example 影响。
 
 ## 2. 创建模块骨架
 
-> **优先用生成器**：`./sb.sh gen-crud booking --title 预约`（前提：先建好 Prisma 模型并迁移）。
-> 生成产物已对齐框架约定（前端 `usePagedList` / `TablePager` / `StatusTag` / `v-permission` 三件套），以下手写流程用于理解结构或定制。
+> **优先用生成器**：`./sb.sh gen-crud booking --title 预约`（先 `--dry-run` 看会生成哪些文件；生成后按提示粘贴 Prisma 模型并迁移、注册模块、加菜单；`--remove` 可撤销）。
+> 生成产物已对齐框架约定（前端 `usePagedList` / `TablePager` / `StatusTag` / `v-permission` / `formatTime`，编辑只提交 DTO 字段；后端编码唯一预检 + `withUniqueViolation` 兜底）。
+> 页面默认放在业务目录 `views/biz/`，菜单挂在「业务管理」下——不要放进框架目录 `views/system/`，否则跟随上游升级时会冲突。以下手写流程用于理解结构或定制。
 
 ```
 modules/booking/

@@ -7,7 +7,7 @@
       <el-button v-permission="'system:role:create'" type="primary" plain @click="openCreate">新增角色</el-button>
     </div>
 
-    <el-table :data="rows" border stripe>
+    <el-table v-loading="loading" :data="rows" border stripe>
       <el-table-column prop="code" label="角色编码" width="160" />
       <el-table-column prop="name" label="角色名称" width="160" />
       <el-table-column label="用户数" width="90">
@@ -58,7 +58,7 @@
             check-strictly
             default-expand-all
             :props="{ label: 'name', children: 'children' }"
-            style="width: 100%; border: 1px solid #ebeef5; border-radius: 4px; padding: 6px; max-height: 320px; overflow: auto"
+            style="width: 100%; border: 1px solid var(--el-border-color-lighter); border-radius: 4px; padding: 6px; max-height: 320px; overflow: auto"
             @check="onTreeCheck"
           />
         </el-form-item>
@@ -80,7 +80,7 @@ import { roleApi, type RoleRow } from "@/api/system";
 import type { MenuNode } from "@/api/auth";
 import { usePagedList } from "@/composables/usePagedList";
 
-const { query, rows, total, load, search } = usePagedList(
+const { query, rows, total, loading, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "" },
   (q) => roleApi.list({ ...q, keyword: q.keyword || undefined }),
 );

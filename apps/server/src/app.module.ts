@@ -5,11 +5,12 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { validateEnv } from './core/config/env.validation';
 import { LoggerModule } from './core/logger/logger.module';
-import { AppLogger } from './core/logger/logger.service';
 import { TraceMiddleware } from './core/logger/trace.middleware';
 import { PrismaModule } from './core/prisma/prisma.module';
 import { LockModule } from './core/lock/lock.module';
 import { RedisModule } from './core/redis/redis.module';
+import { RedisClientService } from './core/redis/redis-client.service';
+import { SharedThrottlerStorage } from './core/security/shared-throttler.storage';
 import { SecurityModule } from './core/security/security.module';
 import { JwtAuthGuard } from './core/security/jwt-auth.guard';
 import { PermissionsGuard } from './core/security/permissions.guard';
@@ -40,14 +41,18 @@ import { ExampleModule } from './modules/example/example.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }),
     ScheduleModule.forRoot(),
+    // 全局限流：LOCK_DRIVER=redis 时计数放 Redis（多实例共享额度），否则进程内存
     ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => [
-        {
-          ttl: Number(config.get('THROTTLE_TTL')) * 1000,
-          limit: Number(config.get('THROTTLE_LIMIT')),
-        },
-      ],
+      inject: [ConfigService, RedisClientService],
+      useFactory: (config: ConfigService, redis: RedisClientService) => ({
+        throttlers: [
+          {
+            ttl: Number(config.get('THROTTLE_TTL')) * 1000,
+            limit: Number(config.get('THROTTLE_LIMIT')),
+          },
+        ],
+        storage: new SharedThrottlerStorage(redis),
+      }),
     }),
     // ---- core ----
     LoggerModule,

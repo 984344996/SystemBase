@@ -1,11 +1,12 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { RedisClientService } from '../../core/redis/redis.module';
+import { localEventBus } from '../../core/redis/testing';
 import { RoleService } from './role.service';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
 import { PrivilegeGuardService } from '../../core/security/privilege-guard.service';
 import { AuthUser } from '../../core/security/jwt.strategy';
+import { BizCode } from '../../core/filter/business.exception';
 
 const SUPER: AuthUser = { id: 1, username: 'admin', name: '管理员', roles: ['SUPER_ADMIN'], permissions: [], mustChangePassword: false, pwdUpdatedAt: 0 };
 const OPERATOR: AuthUser = {
@@ -34,7 +35,7 @@ function setup() {
   prisma.$transaction = jest.fn((arg: any) => (typeof arg === 'function' ? arg(prisma) : Promise.all(arg)));
   const permCache = new PermissionCacheService(
     new ConfigService({ PERMISSION_CACHE_TTL: '30' }),
-    new RedisClientService(new ConfigService({ LOCK_DRIVER: 'db' })),
+    localEventBus(),
   );
   const invalidateAll = jest.spyOn(permCache, 'invalidateAll');
   const privilege = new PrivilegeGuardService(prisma as unknown as PrismaService);
@@ -43,10 +44,10 @@ function setup() {
 }
 
 describe('RoleService.create', () => {
-  it('编码重复 → 400', async () => {
+  it('编码重复 → 409（业务码 40901）', async () => {
     const { service, prisma } = setup();
     prisma.role.findUnique.mockResolvedValue({ id: 1, code: 'OPS' });
-    await expect(service.create({ code: 'OPS', name: '运营' }, SUPER)).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.create({ code: 'OPS', name: '运营' }, SUPER)).rejects.toMatchObject({ response: { bizCode: BizCode.DUPLICATE } });
   });
 
   it('并发撞唯一约束 → 业务码 40901（HTTP 409）而非 500', async () => {

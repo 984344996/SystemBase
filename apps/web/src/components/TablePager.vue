@@ -12,6 +12,7 @@
 </template>
 
 <script setup lang="ts">
+/* eslint-disable vue/no-mutating-props -- 设计如此：query 是 usePagedList 返回的响应式查询对象，由分页条直接改页码 */
 /**
  * 列表页统一分页条（与 usePagedList 配套）：
  * 翻页直接重新加载；改 pageSize 回到第 1 页再加载（避免落在超出范围的空页）。

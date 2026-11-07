@@ -37,7 +37,9 @@
             <span v-else>{{ fmt(row.startAt) }} ~ {{ fmt(row.endAt) }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="createdAt" label="创建时间" width="180" />
+        <el-table-column label="创建时间" width="170">
+          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button v-permission="'system:notice:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
@@ -53,7 +55,7 @@
             <el-button link type="primary" @click="preview(row)">预览</el-button>
             <el-popconfirm title="确认删除？" @confirm="onDelete(row)">
               <template #reference>
-                <el-button v-permission="'system:notice:delete'" link type="danger">删除</el-button>
+                <el-button v-permission="'system:notice:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
               </template>
             </el-popconfirm>
           </template>
@@ -64,9 +66,9 @@
       <TablePager :query="query" :total="total" :load="load" />
     </el-card>
 
-    <el-drawer v-model="dialog" :title="editingId ? '编辑公告' : '新增公告'" size="560px">
-      <el-form :model="form" label-width="90px">
-        <el-form-item label="标题"><el-input v-model="form.title" /></el-form-item>
+    <el-drawer v-model="visible" :title="isEdit ? '编辑公告' : '新增公告'" size="560px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-width="90px">
+        <el-form-item label="标题" prop="title"><el-input v-model="form.title" maxlength="200" /></el-form-item>
         <el-form-item label="类型">
           <el-radio-group v-model="form.type">
             <el-radio value="NOTICE">公告</el-radio>
@@ -76,7 +78,7 @@
         <el-form-item label="置顶"><el-switch v-model="form.top" /></el-form-item>
         <el-form-item label="有效期">
           <el-date-picker
-            v-model="range"
+            v-model="form.range"
             type="datetimerange"
             range-separator="~"
             start-placeholder="生效开始"
@@ -85,12 +87,12 @@
             style="width: 100%"
           />
         </el-form-item>
-        <el-form-item label="内容">
+        <el-form-item label="内容" prop="content">
           <el-input v-model="form.content" type="textarea" :rows="8" />
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="dialog = false">取消</el-button>
+        <el-button @click="visible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submit">保存</el-button>
       </template>
     </el-drawer>
@@ -103,81 +105,75 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { onMounted, ref } from "vue";
+import { ElMessage, type FormRules } from "element-plus";
 import { noticeApi, type NoticeRow } from "@/api/notice";
 import { usePagedList } from "@/composables/usePagedList";
+import { useCrudForm } from "@/composables/useCrudForm";
+import { formatTime } from "@/utils/datetime";
 
+// ---------- 列表 ----------
 const { query, rows, total, loading, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "", type: "", status: "" },
-  (q) =>
-    noticeApi.list({
-      ...q,
-      keyword: q.keyword || undefined,
-      type: q.type || undefined,
-      status: q.status || undefined,
-    }),
+  (q) => noticeApi.list(q),
 );
-const saving = ref(false);
-const dialog = ref(false);
-const previewVisible = ref(false);
-const previewRow = ref<NoticeRow | null>(null);
-const range = ref<[string, string] | null>(null);
-const editingId = ref<number | null>(null);
-const form = reactive({ title: "", content: "", type: "NOTICE", top: false, status: "DRAFT" });
 
-function openCreate() {
-  editingId.value = null;
-  Object.assign(form, { title: "", content: "", type: "NOTICE", top: false, status: "DRAFT" });
-  range.value = null;
-  dialog.value = true;
-}
+// ---------- 新增 / 编辑（useCrudForm：回填只取表单字段，提交前组装有效期） ----------
+const rules: FormRules = {
+  title: [{ required: true, message: "请输入标题", trigger: "blur" }],
+  content: [{ required: true, message: "请输入内容", trigger: "blur" }],
+};
+const { visible, saving, isEdit, form, formRef, openCreate, openEdit, submit } = useCrudForm({
+  empty: () => ({ title: "", content: "", type: "NOTICE", top: false, range: null as [string, string] | null }),
+  fromRow: (row: NoticeRow) => ({
+    title: row.title,
+    content: row.content,
+    type: row.type,
+    top: row.top,
+    range: row.startAt && row.endAt ? ([row.startAt, row.endAt] as [string, string]) : null,
+  }),
+  // 有效期拆成 startAt/endAt；编辑时清空有效期要显式传 null（undefined 表示不修改，原有效期会保留）
+  toPayload: ({ range, ...rest }, editing) => ({
+    ...rest,
+    startAt: range?.[0] ?? (editing ? null : undefined),
+    endAt: range?.[1] ?? (editing ? null : undefined),
+  }),
+  create: noticeApi.create,
+  update: noticeApi.update,
+  onSaved: load,
+  successMessage: "保存成功（发布后用户端可见）",
+});
 
-function openEdit(row: NoticeRow) {
-  editingId.value = row.id;
-  // 只取表单字段（整行 assign 会带上 id/createdAt 等，提交时被后端白名单校验拒绝）
-  Object.assign(form, { title: row.title, content: row.content, type: row.type, top: row.top, status: row.status });
-  range.value = row.startAt && row.endAt ? [row.startAt, row.endAt] : null;
-  dialog.value = true;
-}
-
-async function submit() {
-  if (!form.title || !form.content) return ElMessage.warning("标题与内容不能为空");
-  saving.value = true;
-  try {
-    if (editingId.value) {
-      // 清空有效期时显式传 null（undefined 表示不修改，原有效期会保留）
-      await noticeApi.update(editingId.value, { ...form, startAt: range.value?.[0] ?? null, endAt: range.value?.[1] ?? null });
-    } else {
-      await noticeApi.create({ ...form, startAt: range.value?.[0], endAt: range.value?.[1] });
-    }
-    ElMessage.success("保存成功（发布后用户端可见）");
-    dialog.value = false;
-    load();
-  } finally {
-    saving.value = false;
-  }
-}
-
+// ---------- 发布 / 删除 / 预览 ----------
 async function onPublish(row: NoticeRow) {
   await noticeApi.publish(row.id);
   ElMessage.success("已发布");
   load();
 }
 
+/** 删除：按钮显示 loading，防止重复点击 */
+const deletingId = ref<number>();
 async function onDelete(row: NoticeRow) {
-  await noticeApi.remove(row.id);
-  ElMessage.success("已删除");
-  load();
+  deletingId.value = row.id;
+  try {
+    await noticeApi.remove(row.id);
+    ElMessage.success("已删除");
+    load();
+  } finally {
+    deletingId.value = undefined;
+  }
 }
 
+const previewVisible = ref(false);
+const previewRow = ref<NoticeRow | null>(null);
 function preview(row: NoticeRow) {
   previewRow.value = row;
   previewVisible.value = true;
 }
 
+/** 有效期显示：精确到分钟，未设置显示「不限」 */
 function fmt(v?: string | null) {
-  return v ? String(v).replace("T", " ").slice(0, 16) : "不限";
+  return v ? formatTime(v).slice(0, 16) : "不限";
 }
 
 onMounted(load);
@@ -185,5 +181,5 @@ onMounted(load);
 
 <style scoped>
 .top-tag { margin-right: 6px; }
-.notice-content { white-space: pre-wrap; line-height: 1.7; color: #303133; }
+.notice-content { white-space: pre-wrap; line-height: 1.7; color: var(--el-text-color-primary); }
 </style>

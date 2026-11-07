@@ -61,7 +61,7 @@ h3 {
   margin-right: 6px;
 }
 .muted {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 .tip {

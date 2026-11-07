@@ -60,39 +60,21 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { monitorApi, type OperateLogRow } from "@/api/system";
+import { onMounted, ref } from "vue";
+import { monitorApi } from "@/api/system";
 import { today } from "@/utils/datetime";
+import { usePagedList } from "@/composables/usePagedList";
 
-const rows = ref<OperateLogRow[]>([]);
-const total = ref(0);
+/** 命中过多时后端只保留最新一部分，页面上提示 */
 const truncated = ref(false);
-const loading = ref(false);
-const query = reactive({ date: today(), keyword: "", module: "", success: "", page: 1, pageSize: 10 });
-
-async function load() {
-  loading.value = true;
-  try {
-    const res = await monitorApi.operateLogs({
-      date: query.date,
-      keyword: query.keyword || undefined,
-      module: query.module || undefined,
-      success: query.success || undefined,
-      page: query.page,
-      pageSize: query.pageSize,
-    });
-    rows.value = res.list;
-    total.value = res.total;
+const { query, rows, total, loading, load, search } = usePagedList(
+  { date: today(), keyword: "", module: "", success: "", page: 1, pageSize: 10 },
+  async (q, { signal }) => {
+    const res = await monitorApi.operateLogs(q, signal);
     truncated.value = res.truncated;
-  } finally {
-    loading.value = false;
-  }
-}
-
-function search() {
-  query.page = 1;
-  load();
-}
+    return res;
+  },
+);
 
 onMounted(load);
 </script>
@@ -101,20 +83,20 @@ onMounted(load);
 .detail {
   padding: 4px 12px;
   font-size: 12px;
-  color: #66707e;
+  color: var(--el-text-color-regular);
 }
 .key {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
 }
 .err {
-  color: #f56c6c;
+  color: var(--el-color-danger);
 }
 .json {
   margin: 4px 0 0;
   padding: 8px;
-  background: #f7f8fa;
+  background: var(--el-fill-color-lighter);
   border-radius: 4px;
-  color: #333;
+  color: var(--el-text-color-primary);
   white-space: pre-wrap;
   word-break: break-all;
 }

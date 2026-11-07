@@ -23,6 +23,25 @@ export default defineConfig({
       "@sb/shared": fileURLToPath(new URL("../../packages/shared/src/index.ts", import.meta.url)),
     },
   },
+  // 开发模式预构建图标包的 CJS 版本（useIconSet 动态加载它），首次打开页面时不必再临时转换
+  optimizeDeps: {
+    include: ["@element-plus/icons-vue/dist/index.cjs"],
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        /**
+         * Vue 全家桶单独分包：几乎不变，业务代码改动后重新发布时文件名（hash）不变，浏览器继续用缓存。
+         * 其余依赖交给 Rollup 自动拆分：Element Plus 组件按页面按需进各自的 chunk（合成一个大包反而
+         * 会让首屏下载全部组件）；图标库由 MenuIcon 动态 import，单独成为按需加载的 chunk
+         */
+        manualChunks(id) {
+          if (/[\\/]node_modules[\\/]\.pnpm[\\/](@vue\+|vue@|vue-router@|pinia@)/.test(id)) return "vendor-vue";
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     proxy: {

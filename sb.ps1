@@ -77,6 +77,7 @@
 #   db-remote-on/off  临时开放/关闭数据库远程访问（排查用，用完务必关闭）
 #   ssh          登录服务器（交互式）
 #   gen-crud     生成 CRUD 模块骨架（本机操作，不碰服务器）
+#   init-project 新项目初始化：替换项目名/包作用域/库名，可删除示例模块（先预览，加 --yes 执行）
 #   setup-hooks  启用 .githooks/pre-commit（提交前自动跑 pnpm lint && pnpm test）
 #
 # 提示：所有远程命令都不会改动数据库结构以外的业务数据，fresh / db-restore 是仅有的覆盖数据操作。
@@ -132,6 +133,13 @@ switch ($Environment) {
     & git config core.hooksPath .githooks
     Write-Host "✓ 已启用 pre-commit 钩子（.githooks/pre-commit）" -ForegroundColor Green
     Write-Host "  提交前将执行: pnpm lint && pnpm test；临时跳过: `$env:SKIP_HOOKS='1'; git commit ..."
+  }
+  "init-project" {
+    # 非环境命令：新项目初始化（PowerShell 位置参数有限，建议直接 node scripts/init-project.mjs --name xxx ...）
+    $initArgs = @()
+    foreach ($a in @($Command, $Arg1, $Arg2)) { if ($a) { $initArgs += $a } }
+    & node (Join-Path $root "scripts\init-project.mjs") @initArgs
+    exit $LASTEXITCODE
   }
   "gen-crud" {
     # 非环境命令：CRUD 代码生成器（未提供的位置参数不传，避免空字符串被当成参数）

@@ -192,8 +192,24 @@ echo "==> [5/7] 配置 Nginx 站点"
 # 站点 server 块、路由片段（支持 SITE_PATH 子路径部署）、共享域名注入统一由 nginx-setup.sh 生成；
 # remote-deploy.sh 每次发布也会调用它刷新，域名/子路径等配置变更无需重新 init
 bash "$HERE/nginx-setup.sh" "$APP_DIR" "$APP_NAME" "$ENV_FILE"
-# CentOS 系默认 nginx.conf 自带 default_server 监听 80，与站点冲突时去掉其 default_server 标记
-sed -i 's/listen\(\s\+\)80 default_server;/listen\180;/; s/listen\(\s\+\)\[::\]:80 default_server;/listen\1[::]:80;/' /etc/nginx/nginx.conf 2>/dev/null || true
+# CentOS 系 nginx.conf 自带一个 listen 80 default_server 的欢迎页 server 块。只有本站点也监听 80
+# 且没配域名（server_name _）时才冲突（用 IP 访问会落到欢迎页）——仅此时去掉其 default_server 标记；
+# 配了域名或用其他端口时不碰 nginx.conf。修改前备份为 nginx.conf.sb-orig（只备份第一次的原始版本），
+# 校验失败自动还原
+SITE_PORT_V="$(node "$HERE/env-tool.cjs" get "$ENV_FILE" SITE_PORT 80)"
+SITE_DOMAIN_V="$(node "$HERE/env-tool.cjs" get "$ENV_FILE" SITE_DOMAIN "")"
+if [ "${SITE_PORT_V:-80}" = 80 ] && [ -z "$SITE_DOMAIN_V" ] && grep -qE 'listen[[:space:]]+(\[::\]:)?80[[:space:]]+default_server' /etc/nginx/nginx.conf 2>/dev/null; then
+  [ -f /etc/nginx/nginx.conf.sb-orig ] || cp -p /etc/nginx/nginx.conf /etc/nginx/nginx.conf.sb-orig
+  cp -p /etc/nginx/nginx.conf /etc/nginx/nginx.conf.sb-bak
+  sed -i 's/listen\(\s\+\)80 default_server;/listen\180;/; s/listen\(\s\+\)\[::\]:80 default_server;/listen\1[::]:80;/' /etc/nginx/nginx.conf
+  if nginx -t >/dev/null 2>&1; then
+    echo "    已去掉 nginx.conf 默认欢迎页的 default_server 标记（原文件备份: /etc/nginx/nginx.conf.sb-orig）"
+    rm -f /etc/nginx/nginx.conf.sb-bak
+  else
+    mv -f /etc/nginx/nginx.conf.sb-bak /etc/nginx/nginx.conf
+    echo "    !! 修改 nginx.conf 后校验失败，已还原"
+  fi
+fi
 nginx -t
 systemctl enable --now nginx >/dev/null 2>&1 || true
 systemctl reload nginx

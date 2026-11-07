@@ -1,20 +1,15 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
+import { BizCode } from '@sb/shared';
 
 /**
- * 业务错误码：与 HTTP 状态解耦，前端可凭 code 区分「同是 400 的不同业务错误」。
- * 规则：前三位对齐 HTTP 语义（4xx 客户端错误），后两位为序号；新增码集中在这里登记。
+ * 业务错误码定义在 @sb/shared（前后端共用一份），这里再导出一次，保持原有引用路径可用：
+ *   import { BizCode, BusinessException } from '../filter/business.exception';
  */
-export enum BizCode {
-  /** 必须先修改密码（管理员重置过密码，HTTP 403；前端据此跳改密页） */
-  PASSWORD_CHANGE_REQUIRED = 40301,
-  /** 授出的角色/权限超出操作者自身范围（HTTP 403） */
-  PRIVILEGE_ESCALATION = 40302,
-  /** 资源已存在（唯一约束冲突/预检重复） */
-  DUPLICATE = 40901,
-  /** 当前状态不允许该操作（如内置数据被删改） */
-  INVALID_STATE = 40902,
-  /** 登录需要验证码（HTTP 412，前端据此展示验证码输入框） */
-  NEED_CAPTCHA = 42801,
+export { BizCode };
+
+/** 资源重复（HTTP 409 + 业务码 40901）：预检发现重复与并发撞唯一约束统一用它，前端按 code 识别 */
+export function duplicate(message: string): BusinessException {
+  return new BusinessException(BizCode.DUPLICATE, message, HttpStatus.CONFLICT);
 }
 
 /**

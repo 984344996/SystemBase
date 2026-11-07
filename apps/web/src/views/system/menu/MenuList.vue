@@ -6,7 +6,7 @@
       <el-button v-if="auth.hasPerm('system:menu:create')" type="primary" plain @click="openCreate(0)">新增顶级</el-button>
     </div>
 
-    <el-table :data="tree" row-key="id" border default-expand-all>
+    <el-table v-loading="loading" :data="tree" row-key="id" border default-expand-all>
       <el-table-column prop="name" label="名称" width="200" />
       <el-table-column label="类型" width="90">
         <template #default="{ row }">
@@ -46,10 +46,11 @@
         <el-form-item label="路由路径" v-if="form.type !== 'BUTTON'"><el-input v-model="form.path" placeholder="/system/user" /></el-form-item>
         <el-form-item label="组件路径" v-if="form.type === 'MENU'"><el-input v-model="form.component" placeholder="system/user/UserList" /></el-form-item>
         <el-form-item label="权限码" v-if="form.type !== 'DIRECTORY'"><el-input v-model="form.permission" placeholder="system:user:list" /></el-form-item>
-        <el-form-item label="图标" v-if="form.type !== 'BUTTON'"><el-input v-model="form.icon" placeholder="Element Plus 图标名，如 Setting" /></el-form-item>
+        <el-form-item label="图标" v-if="form.type !== 'BUTTON'"><IconPicker v-model="form.icon" /></el-form-item>
         <el-form-item label="排序"><el-input-number v-model="form.sort" :min="0" /></el-form-item>
         <el-form-item label="可见" v-if="form.type !== 'BUTTON'">
           <el-switch v-model="form.visible" />
+          <span class="form-tip">关闭后不在侧栏显示，但页面仍可按路径访问（适合详情页、编辑页）</span>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -84,8 +85,15 @@ function typeTag(t: string): "warning" | "primary" | "info" {
   return ({ DIRECTORY: "warning", MENU: "primary", BUTTON: "info" } as const)[t] ?? "info";
 }
 
+/** 菜单树加载（表格显示 loading） */
+const loading = ref(false);
 async function load() {
-  tree.value = await menuApi.tree();
+  loading.value = true;
+  try {
+    tree.value = await menuApi.tree();
+  } finally {
+    loading.value = false;
+  }
 }
 
 function openCreate(parentId: number) {
@@ -143,7 +151,7 @@ onMounted(load);
 
 <style scoped>
 .muted {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 </style>

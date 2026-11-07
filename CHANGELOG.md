@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### 框架审查修复（docs/gap-analysis.md）
+
+**⚠️ 行为变更（升级必读）**
+- 「已存在」类错误由 400 改为 **409 + 业务码 40901**；前端按 HTTP 400 判断重复的代码需改为 `bizCodeOf(e) === BizCode.DUPLICATE`
+- 登录锁定改为 **429 + 42901**，并新增账号级锁定（`LOGIN_FAIL_ACCOUNT_LOCK_COUNT`，默认为单 IP 阈值 ×4）
+- `LOCK_DRIVER=redis` 时限流、登录计数、验证码、权限/参数/字典缓存失效全部跨实例共享；Redis 不可用时锁返回失败（不再退回数据库锁）
+- 图标不再全局注册：页面里 `<Setting />` 这类直接写图标标签的地方需改为 `<MenuIcon name="Setting" />`
+- 后台菜单接口返回隐藏菜单（`visible=false`），前端注册路由但不在侧栏显示
+- `system.cleanup` 定时任务移到框架内置（`modules/job`），删除示例模块不再影响清理
+
+**修复**
+- 生产构建缺少 `ElMessage` / `ElMessageBox` 样式
+- GET 查询参数中的空字符串导致 400（请求拦截器统一去掉空值）
+- 代码生成器产物：编辑时整行提交导致 400、查询空状态 400、缺少唯一约束兜底
+- 环境变量校验漏 9 个变量；`PORT` / `LOCK_DRIVER` / `TRUST_PROXY` 格式未校验
+- 验证码存储可被公开接口无限写入（加上限与定时清理）
+- 多实例下同一 cron 计划时间被执行多次
+- 列表页快速翻页 / 查询时旧请求的结果覆盖新结果
+
+**新增**
+- 后端：`SharedStoreService`、`EventBusService`、`REDIS_KEY_PREFIX`、Prisma 约束错误统一映射（P2002 / P2025 / P2003 / P2000）
+- 前端：深色模式（顶栏切换浅色 / 深色 / 跟随系统，`utils/theme.ts`）、`useCrudForm`、`DictSelect` / `DictTag`（字典缓存）、`IconPicker`、多级菜单 + 侧栏折叠 + 面包屑、页面级错误边界、CSV 导出（`utils/export.ts`）
+- 共享包：`BizCode`、`ApiResponse`、`SUPER_ROLE` 移到 `@sb/shared` 前后端共用；删除未使用的 `time.ts`
+- 工程化：ESLint（`eslint.config.mjs`）+ Prettier + EditorConfig；前端单测（vitest）；`pnpm test` 覆盖前后端
+- CI：依赖缓存、前端单测、代码生成器冒烟、生产依赖漏洞审计；Dependabot 每周更新
+- 脚本：`./sb.sh init-project`（新项目改名 / 删示例）、`scripts/bump-version.mjs`（统一版本号 + CHANGELOG）、`docker-compose.dev.yml`（本地 MySQL + Redis）
+- 依赖安全：通过 `pnpm.overrides` 修复 multer / lodash / body-parser / qs 等高危漏洞（剩余 2 个中危需升级 NestJS 11）
+
+**其他**
+- 后端覆盖率门 35% → 50%；首屏 JS 469KB → 346KB（图标按需加载、Vue 单独分包）
+- `make dev` 改为调用 `./sb.sh local start`；`prisma validate` 不再依赖本机 `.env`
+
 ### 部署流程审查修复（docs/deploy-review.md）
 
 **⚠️ 行为变更（升级必读）**
@@ -30,6 +62,8 @@
 - 配置了 `IP_WHITELIST` 时本机健康检查被拦截导致每次发布回滚
 - 部署键过滤兼容 `export KEY=` 写法；修改 `SITE_PATH/SITE_DOMAIN` 后旧的共享域名注入会被清理
 - 所有部署脚本按函数/步骤补齐注释
+- 发布包不再带 macOS 扩展属性（服务器解压时不再刷 `LIBARCHIVE.xattr` 警告）
+- Nginx 默认站点改为「只在同端口冲突时停用、移到 `/etc/nginx/sb-disabled/` 保存」，原来会**永久删除** `conf.d/default.conf`（备份也被清掉）；含真实域名/证书的不碰；`nginx.conf` 的 `default_server` 只在本站点监听 80 且未配域名时才去掉，并备份为 `nginx.conf.sb-orig`
 
 ### 部署：上传文件跨版本保留 + 超管初始密码可配置
 

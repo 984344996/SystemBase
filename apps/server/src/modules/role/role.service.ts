@@ -7,6 +7,7 @@ import { PrivilegeGuardService } from '../../core/security/privilege-guard.servi
 import { SUPER_ROLE } from '../../core/security/permissions.guard';
 import { AuthUser } from '../../core/security/jwt.strategy';
 import { CreateRoleDto, QueryRoleDto, UpdateRoleDto } from './role.dto';
+import { duplicate } from '../../core/filter/business.exception';
 
 /** 统计角色用户数时只算未删除用户（软删除用户不应阻止删除角色） */
 const ACTIVE_USERS = { users: { where: { user: { deletedAt: null } } } } as const;
@@ -52,7 +53,7 @@ export class RoleService {
 
   async create(dto: CreateRoleDto, operator: AuthUser) {
     const exists = await this.prisma.role.findUnique({ where: { code: dto.code } });
-    if (exists) throw new BadRequestException(`角色编码「${dto.code}」已存在`);
+    if (exists) throw duplicate(`角色编码「${dto.code}」已存在`);
     const { menuIds, ...data } = dto;
     await this.privilege.assertCanEditRole(operator, null, menuIds);
     await this.assertMenusExist(menuIds);

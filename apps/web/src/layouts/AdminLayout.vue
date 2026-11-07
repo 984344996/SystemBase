@@ -1,46 +1,63 @@
 <template>
   <el-container class="layout">
-    <el-aside width="220px" class="aside">
+    <!-- 侧栏：可折叠（记住上次状态；窄屏默认折叠），菜单支持任意层级 -->
+    <el-aside :width="collapsed ? '64px' : '220px'" class="aside">
       <div class="brand">
         <span class="brand-dot" />
-        SystemBase
+        <span v-show="!collapsed">SystemBase</span>
       </div>
       <el-menu
-        :default-active="$route.path"
+        :default-active="activeMenu"
+        :collapse="collapsed"
+        :collapse-transition="false"
         router
-        background-color="#001529"
+        :background-color="isDark ? '#141414' : '#001529'"
         text-color="rgba(255,255,255,0.68)"
         active-text-color="#fff"
         class="menu"
       >
-        <template v-for="item in menus" :key="item.id">
-          <el-sub-menu v-if="item.children?.length" :index="item.path || `dir-${item.id}`">
-            <template #title>
-              <el-icon v-if="item.icon"><component :is="item.icon" /></el-icon>
-              <span>{{ item.name }}</span>
-            </template>
-            <el-menu-item v-for="child in item.children" :key="child.id" :index="child.path || ''">
-              {{ child.name }}
-            </el-menu-item>
-          </el-sub-menu>
-          <el-menu-item v-else :index="item.path || ''">
-            <el-icon v-if="item.icon"><component :is="item.icon" /></el-icon>
-            <span>{{ item.name }}</span>
-          </el-menu-item>
-        </template>
+        <SidebarItem v-for="item in menus" :key="item.id" :item="item" />
       </el-menu>
     </el-aside>
 
     <el-container>
       <el-header class="header">
-        <div class="header-title">{{ ($route.meta.title as string) || "仪表盘" }}</div>
+        <div class="header-left">
+          <span class="collapse-btn" :title="collapsed ? '展开菜单' : '收起菜单'" @click="toggleCollapse">
+            <MenuIcon :name="collapsed ? 'Expand' : 'Fold'" :size="18" />
+          </span>
+          <!-- 面包屑：按当前页面在菜单树中的位置生成 -->
+          <el-breadcrumb separator="/">
+            <el-breadcrumb-item v-for="(c, i) in breadcrumb" :key="i">{{ c }}</el-breadcrumb-item>
+          </el-breadcrumb>
+        </div>
+        <div class="header-spacer" />
+
+        <!-- 主题切换：浅色 / 深色 / 跟随系统（选择保存在本浏览器） -->
+        <el-dropdown trigger="click" @command="setThemeMode">
+          <span class="header-icon" title="切换主题">
+            <MenuIcon :name="themeIcon" :size="18" />
+          </span>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="t in THEME_OPTIONS"
+                :key="t.value"
+                :command="t.value"
+                :class="{ 'is-current': themeMode === t.value }"
+              >
+                <MenuIcon :name="t.icon" />{{ t.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
 
         <!-- 公告中心：铃铛 + 未读红点 -->
         <el-popover placement="bottom-end" :width="380" trigger="click" @show="loadNotices">
           <template #reference>
             <span class="notice-bell">
               <el-badge :value="unread" :hidden="!unread" :max="99">
-                <el-icon :size="18"><Bell /></el-icon>
+                <MenuIcon name="Bell" :size="18" />
               </el-badge>
             </span>
           </template>
@@ -66,7 +83,7 @@
           <span class="user-chip">
             <el-avatar :size="26" class="avatar">{{ auth.user?.name?.charAt(0) }}</el-avatar>
             {{ auth.user?.name }}
-            <el-icon><ArrowDown /></el-icon>
+            <MenuIcon name="ArrowDown" />
           </span>
           <template #dropdown>
             <el-dropdown-menu>
@@ -78,7 +95,10 @@
         </el-dropdown>
       </el-header>
       <el-main class="main">
-        <router-view />
+        <!-- 页面级错误边界：某个页面出错时只影响内容区，侧栏与顶栏可继续使用 -->
+        <PageErrorBoundary>
+          <router-view />
+        </PageErrorBoundary>
       </el-main>
     </el-container>
 
@@ -113,18 +133,76 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { Bell } from "@element-plus/icons-vue";
+import SidebarItem from "./SidebarItem.vue";
+import MenuIcon from "@/components/MenuIcon.vue";
 import { useAuthStore } from "@/stores/auth";
-import { authApi } from "@/api/auth";
+import { authApi, type MenuNode } from "@/api/auth";
 import { noticeApi, type NoticeRow } from "@/api/notice";
 import { formatTime } from "@/utils/datetime";
 import { PASSWORD_HINT, passwordProblem } from "@/utils/password";
+import { isDark, setThemeMode, themeMode, type ThemeMode } from "@/utils/theme";
 
 const router = useRouter();
 const auth = useAuthStore();
-const menus = computed(() => auth.menus);
+
+// ---------- 主题切换 ----------
+const THEME_OPTIONS: { value: ThemeMode; label: string; icon: string }[] = [
+  { value: "light", label: "浅色", icon: "Sunny" },
+  { value: "dark", label: "深色", icon: "Moon" },
+  { value: "system", label: "跟随系统", icon: "Monitor" },
+];
+/** 顶栏按钮显示当前选择对应的图标 */
+const themeIcon = computed(() => THEME_OPTIONS.find((t) => t.value === themeMode.value)?.icon ?? "Monitor");
+
+/**
+ * 侧栏菜单：后端返回的是「有权访问」的全部菜单（含 visible=false 的隐藏页，它们只注册路由不显示），
+ * 这里递归去掉隐藏节点，并去掉子节点全被隐藏后变空的目录
+ */
+function visibleTree(nodes: MenuNode[]): MenuNode[] {
+  return nodes
+    .filter((n) => n.visible !== false)
+    .map((n) => ({ ...n, children: n.children?.length ? visibleTree(n.children) : n.children }))
+    .filter((n) => n.type !== "DIRECTORY" || (n.children?.length ?? 0) > 0);
+}
+const menus = computed(() => visibleTree(auth.menus));
+
+// ---------- 侧栏折叠：记住用户选择；首次访问时窄屏（< 992px）默认折叠 ----------
+const COLLAPSE_KEY = "sb_sidebar_collapsed";
+const saved = localStorage.getItem(COLLAPSE_KEY);
+const collapsed = ref(saved === null ? window.innerWidth < 992 : saved === "1");
+function toggleCollapse() {
+  collapsed.value = !collapsed.value;
+  localStorage.setItem(COLLAPSE_KEY, collapsed.value ? "1" : "0");
+}
+
+// ---------- 面包屑与菜单高亮 ----------
+const route = useRoute();
+
+/** 在菜单树里找到 path 对应的节点链（根 → 当前） */
+function findChain(nodes: MenuNode[], path: string, chain: MenuNode[] = []): MenuNode[] | null {
+  for (const n of nodes) {
+    const next = [...chain, n];
+    if (n.path === path && n.type === "MENU") return next;
+    if (n.children?.length) {
+      const found = findChain(n.children, path, next);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+const breadcrumb = computed(() => {
+  const chain = findChain(auth.menus, route.path);
+  if (chain) return chain.map((n) => n.name);
+  return [(route.meta.title as string) || "首页"];
+});
+/** 隐藏页（visible=false，如详情页）没有侧栏项：高亮它最近的可见上级菜单 */
+const activeMenu = computed(() => {
+  const chain = findChain(auth.menus, route.path);
+  const visible = chain?.filter((n) => n.visible !== false && n.type === "MENU").pop();
+  return visible?.path || route.path;
+});
 
 const pwdVisible = ref(false);
 const pwdSaving = ref(false);
@@ -230,7 +308,9 @@ onBeforeUnmount(() => {
   min-height: 100vh;
 }
 .aside {
-  background: #001529;
+  background: var(--sb-aside-bg);
+  transition: width 0.2s;
+  overflow-x: hidden;
 }
 .brand {
   height: 56px;
@@ -238,6 +318,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   padding: 0 20px;
+  white-space: nowrap;
   color: #fff;
   font-size: 17px;
   font-weight: 600;
@@ -255,26 +336,52 @@ onBeforeUnmount(() => {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  background: #fff;
-  border-bottom: 1px solid #ebeef5;
+  gap: 16px;
+  background: var(--el-bg-color);
+  border-bottom: 1px solid var(--el-border-color-lighter);
 }
-.header-title {
-  font-size: 16px;
-  font-weight: 600;
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.header-spacer {
+  flex: 1;
+}
+.collapse-btn {
+  font-size: 18px;
+  cursor: pointer;
+  color: var(--el-text-color-regular);
+}
+.collapse-btn:hover {
+  color: var(--el-color-primary);
+}
+.header-icon {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  color: var(--el-text-color-regular);
+}
+.header-icon:hover {
+  color: var(--el-color-primary);
+}
+/* 主题下拉里高亮当前选项（下拉菜单渲染在 body 下，需穿透 scoped） */
+:global(.el-dropdown-menu__item.is-current) {
+  color: var(--el-color-primary);
 }
 .user-chip {
   display: flex;
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: #333;
+  color: var(--el-text-color-primary);
 }
 .notice-bell {
   display: flex;
   align-items: center;
   cursor: pointer;
-  color: #606266;
+  color: var(--el-text-color-regular);
   margin-right: 4px;
 }
 .notice-panel-title {
@@ -286,7 +393,7 @@ onBeforeUnmount(() => {
   border-radius: 6px;
   cursor: pointer;
 }
-.notice-item:hover { background: #f5f7fa; }
+.notice-item:hover { background: var(--el-fill-color-light); }
 .notice-item.unread .notice-item-title { font-weight: 600; }
 .notice-item.unread::before {
   content: "";
@@ -294,7 +401,7 @@ onBeforeUnmount(() => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #f56c6c;
+  background: var(--el-color-danger);
   margin-right: 6px;
   vertical-align: middle;
 }
@@ -303,10 +410,10 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
 }
-.notice-item-time { color: #909399; font-size: 12px; margin-top: 2px; }
-.notice-content { white-space: pre-wrap; line-height: 1.7; color: #303133; }
+.notice-item-time { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 2px; }
+.notice-content { white-space: pre-wrap; line-height: 1.7; color: var(--el-text-color-primary); }
 .avatar {
-  background: #409eff;
+  background: var(--el-color-primary);
   color: #fff;
 }
 .main {

@@ -214,9 +214,11 @@ async function main() {
       misfirePolicy: 'SKIP',
       timeoutSec: 120,
       status: 'ENABLED',
-      remark: '清理过期锁/过期刷新令牌（日志文件按 LOG_KEEP_DAYS 自动清理）',
+      remark: '框架内置：清理过期锁/刷新令牌/软删文件/验证码（日志文件按 LOG_KEEP_DAYS 自动清理），建议保持启用',
     },
   });
+
+  // ==================== 示例数据（开新项目可整段删除，与 modules/example 一起删） ====================
   await prisma.job.upsert({
     where: { name: '示例-每日问候' },
     update: {},
@@ -231,6 +233,7 @@ async function main() {
       remark: '示例任务，可删除',
     },
   });
+  // ==================== 示例数据结束 ====================
 
   console.log('✅ 种子数据完成：超管 admin（初始密码 ADMIN_INITIAL_PASSWORD），菜单与默认任务已初始化');
 }

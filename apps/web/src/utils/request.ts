@@ -1,5 +1,6 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import { ElMessage } from "element-plus";
+import { BizCode } from "@sb/shared";
 import { setLastTraceId } from "./clientLog";
 
 export const TOKEN_KEY = "sb_access_token";
@@ -51,7 +52,7 @@ function notify(level: Level, message: string) {
  * - 5xx：error，不展示后端内部信息，只给追踪码（去日志查 traceId）
  * - 403 / 429 / 其余 4xx：warning，展示后端给的业务提示
  */
-function describe(status: number | undefined, serverMsg: string | undefined, traceId: string, code?: string) {
+function describe(status: number | undefined, serverMsg: string | undefined, traceId: string, code?: string, bizCode?: number) {
   const trace = traceId ? `（追踪码 ${traceId.slice(0, 12)}）` : "";
   if (!status) {
     if (code === "ECONNABORTED" || code === "ETIMEDOUT") return { level: "error" as Level, text: `请求超时，请稍后重试${trace}` };
@@ -59,7 +60,8 @@ function describe(status: number | undefined, serverMsg: string | undefined, tra
   }
   if (status >= 500) return { level: "error" as Level, text: `服务器繁忙，请稍后重试${trace}` };
   if (status === 403) return { level: "warning" as Level, text: serverMsg ? `无权限：${serverMsg}` : "无权限执行该操作" };
-  if (status === 429) return { level: "warning" as Level, text: "操作过于频繁，请稍后再试" };
+  // 登录锁定（业务码 42901）的提示里有剩余分钟数，要展示原文；限流的 429 才用通用文案
+  if (status === 429) return { level: "warning" as Level, text: bizCode === BIZ_LOGIN_LOCKED && serverMsg ? serverMsg : "操作过于频繁，请稍后再试" };
   return { level: "warning" as Level, text: serverMsg || "请求参数有误" };
 }
 
@@ -76,8 +78,22 @@ async function readErrorBody(data: unknown): Promise<{ code?: number; message?: 
 }
 
 // ---------------- 登录态失效与强制改密 ----------------
-/** 业务码：必须先修改密码（管理员重置过密码）—— 与后端 BizCode.PASSWORD_CHANGE_REQUIRED 一致 */
-const BIZ_PASSWORD_CHANGE_REQUIRED = 40301;
+/** 业务码与后端共用 @sb/shared 的 BizCode：必须先改密 / 登录被锁定 */
+const BIZ_PASSWORD_CHANGE_REQUIRED = BizCode.PASSWORD_CHANGE_REQUIRED;
+const BIZ_LOGIN_LOCKED = BizCode.LOGIN_LOCKED;
+
+/**
+ * 取接口错误的业务码（后端响应体里的 code，如 40901 重复、42801 需要验证码）：
+ * 调用方 catch 后可据此分支处理；不是接口错误（如前端代码异常）返回 undefined
+ */
+export function bizCodeOf(e: unknown): number | undefined {
+  return (e as { bizCode?: number } | null)?.bizCode;
+}
+
+/** 取接口错误附带的数据（后端 BusinessException 的 data，如 { needCaptcha: true }） */
+export function bizDataOf<T = unknown>(e: unknown): T | undefined {
+  return (e as { bizData?: T } | null)?.bizData;
+}
 
 const base = import.meta.env.BASE_URL;
 
@@ -86,7 +102,9 @@ function kickToLogin(message = "登录已过期，请重新登录") {
   // 子路径部署时这里是 /systembase-pre/login，不能硬编码 "/login"
   if (!window.location.pathname.startsWith(`${base}login`)) {
     notify("warning", message);
-    window.location.href = `${base}login`;
+    // 带上当前页面（去掉 base 前缀，与路由 path 对齐），重新登录后回到原页面
+    const here = window.location.pathname.slice(base.length - 1) + window.location.search;
+    window.location.href = `${base}login?redirect=${encodeURIComponent(here)}`;
   }
 }
 
@@ -97,7 +115,18 @@ const service = axios.create({
   timeout: 20000,
 });
 
+/**
+ * 去掉查询参数里的空值（'' / null / undefined）：查询栏清空后是空字符串，
+ * 后端 @IsOptional 只跳过 null/undefined，空串会被 @IsIn/@IsInt 等校验拒绝（400）。
+ * 只处理 URL 查询参数（params），请求体（data）原样发送——编辑时用 null 清空字段的语义要保留
+ */
+export function compactParams(params: unknown): unknown {
+  if (!params || typeof params !== "object" || params instanceof URLSearchParams || Array.isArray(params)) return params;
+  return Object.fromEntries(Object.entries(params).filter(([, v]) => v !== "" && v !== null && v !== undefined));
+}
+
 service.interceptors.request.use((config) => {
+  config.params = compactParams(config.params);
   const token = localStorage.getItem(TOKEN_KEY);
   if (token) config.headers.Authorization = `Bearer ${token}`;
   if (!config.headers["X-Trace-Id"]) config.headers["X-Trace-Id"] = newTraceId();
@@ -163,11 +192,13 @@ service.interceptors.response.use(
       if (body.code === 0) return body.data;
       if (!response.config.silent) notify("warning", body.message || "请求失败");
       // 标记为接口错误：已提示过用户，未捕获时不当作前端 bug 上报（见 clientLog.isNoise）
-      return Promise.reject(Object.assign(new Error(body.message), { __api: true }));
+      return Promise.reject(Object.assign(new Error(body.message), { __api: true, bizCode: body.code, bizData: body.data }));
     }
     return body;
   },
   async (error: AxiosError) => {
+    // 主动取消的请求（切换查询条件、离开页面）：不提示、不重试，原样交给调用方忽略
+    if (axios.isCancel(error)) return Promise.reject(error);
     const config = error.config as RetriableConfig | undefined;
     const url = config?.url || "";
     const status = error.response?.status;
@@ -196,6 +227,8 @@ service.interceptors.response.use(
     if (config?.silent || (status === 401 && isAuthApi)) return Promise.reject(error);
 
     const body = await readErrorBody(error.response?.data);
+    // 业务码挂到错误对象上，调用方用 bizCodeOf(e) / bizDataOf(e) 读取
+    Object.assign(error, { bizCode: body?.code, bizData: (body as { data?: unknown } | undefined)?.data });
 
     // 服务端强制改密：只有改密/个人信息接口可用，其余请求统一引导到改密页
     if (status === 403 && body?.code === BIZ_PASSWORD_CHANGE_REQUIRED) {
@@ -205,7 +238,7 @@ service.interceptors.response.use(
 
     const traceId =
       body?.traceId || (error.response?.headers?.["x-trace-id"] as string) || (config?.headers?.["X-Trace-Id"] as string) || "";
-    const { level, text } = describe(status, body?.message, traceId, error.code);
+    const { level, text } = describe(status, body?.message, traceId, error.code, body?.code);
     notify(level, text);
     if (status && status >= 500) console.error(`[api] ${config?.method?.toUpperCase()} ${url} ${status} traceId=${traceId}`);
     return Promise.reject(error);

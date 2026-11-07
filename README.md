@@ -10,7 +10,7 @@ systembase/
 │   ├── server/        # NestJS 后端(core 框架层 + modules 系统模块(auth/user/role/menu/job/monitor) + example 示例)
 │   └── web/           # Vue3 + TS 管理端(登录/布局/系统管理页面)
 ├── packages/
-│   └── shared/        # 前后端共享工具(时间区间算法、通用常量)
+│   └── shared/        # 前后端共享：业务错误码 BizCode、响应结构、分页类型、密码规则、建树工具
 ├── deploy/
 │   ├── envs/          # 环境配置：local.env + remote-<名字>.env；模板 remote.env.example / local.env.example 已提交
 │   └── server/        # 服务器部署：初始化 / 发布 / 运维 / SSL 脚本，PM2 与 Nginx 模板
@@ -28,7 +28,8 @@ systembase/
 |---|---|---|
 | Node.js | ≥ 20.10 | |
 | pnpm | 9.x | 已在根 `package.json` 用 `packageManager` 锁定，执行 `corepack enable` 后自动使用正确版本 |
-| MySQL | 8.x | 本地开发直连；服务器部署 `init` 可自动安装 |
+| MySQL | 8.x | 本地开发直连（或用 `docker compose -f docker-compose.dev.yml up -d` 起一个）；服务器部署 `init` 可自动安装 |
+| Redis | 可选 | 多实例部署时用（`LOCK_DRIVER=redis`）；单机不需要 |
 
 ## 5 分钟跑起来
 
@@ -41,7 +42,30 @@ cp deploy/envs/local.env.example deploy/envs/local.env # 确认 DATABASE_URL 指
 一条命令完成：安装依赖 → 数据库迁移 → 种子数据（超管 admin/admin123）→ 后台启动前后端 → 等待就绪。
 登录 `http://localhost:5173` ｜ admin / admin123。`./sb.sh local stop | status | fresh | logs` 见 [部署指南](docs/deploy.md)。
 
-> 手动方式：`pnpm install && make db-deploy && make db-seed && make dev`。
+> 没装 MySQL：`docker compose -f docker-compose.dev.yml up -d`，把 `local.env` 的 `DATABASE_URL` 改成 `mysql://root:root@127.0.0.1:3306/system_base`。
+> `pnpm dev` 只并行启动三个 watch 进程，不建 `.env` 软链、不跑迁移，日常请用 `./sb.sh local start`（`make dev` 等价）。
+
+## 基于本框架开新项目
+
+```bash
+./sb.sh init-project --name crm --title 客户管理系统 --remove-example          # 预览要改什么
+./sb.sh init-project --name crm --title 客户管理系统 --remove-example --yes    # 执行：改项目名/包作用域 @crm/*/库名，删除示例模块
+pnpm install && pnpm lint && pnpm test
+./sb.sh gen-crud customer --title 客户管理                                     # 生成第一个业务模块（先 --dry-run 看看）
+```
+
+开发约定见 [CONTRIBUTING](CONTRIBUTING.md)；跟随框架上游升级见 [升级路径](docs/upgrade-path.md)。
+
+## 质量保障
+
+| 命令 | 内容 |
+|---|---|
+| `pnpm lint` | 全部包类型检查 + `prisma validate` + ESLint |
+| `pnpm test` | 后端单测（jest，覆盖率门 50%）+ 前端单测（vitest） |
+| `pnpm --filter @sb/server test:e2e` | 主链路 E2E（独立库 `system_base_e2e`） |
+| `./sb.sh setup-hooks` | 启用 pre-commit：提交前自动跑 lint + test + 生成文档漂移检查 |
+
+CI（`.github/workflows/ci.yml`）另外做：代码生成器冒烟、部署脚本检查（bash + shellcheck + PowerShell 语法）、生产依赖漏洞审计、Dependabot 每周依赖更新。
 
 ## 三环境发布（统一入口 sb.sh / sb.ps1）
 

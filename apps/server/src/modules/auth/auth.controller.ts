@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Post, Put, Req } from '@nestjs/common';
 import { AllowPendingPassword, LoginOnly } from '../../core/security/permissions.decorator';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { Public } from '../../core/security/public.decorator';

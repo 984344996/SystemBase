@@ -2,16 +2,14 @@
   <div class="page-card">
     <div class="toolbar">
       <el-input v-model="query.keyword" placeholder="用户名/姓名" clearable style="width: 200px" @keyup.enter="search" />
-      <el-select v-model="query.status" placeholder="状态" clearable style="width: 120px">
-        <el-option label="启用" value="ENABLED" />
-        <el-option label="禁用" value="DISABLED" />
-      </el-select>
+      <DictSelect v-model="query.status" code="common_status" placeholder="状态" style="width: 120px" />
       <el-button type="primary" @click="search">查询</el-button>
       <div class="spacer" />
+      <el-button v-permission="'system:user:list'" :loading="exporting" @click="onExport">导出</el-button>
       <el-button v-permission="'system:user:create'" type="primary" plain @click="openCreate">新增用户</el-button>
     </div>
 
-    <el-table :data="rows" border stripe>
+    <el-table v-loading="loading" :data="rows" border stripe>
       <el-table-column prop="username" label="用户名" width="140" />
       <el-table-column prop="name" label="姓名" width="120" />
       <el-table-column label="角色">
@@ -81,13 +79,39 @@ import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { userApi, roleApi, type UserRow } from "@/api/system";
 import { usePagedList } from "@/composables/usePagedList";
-import { formatTime } from "@/utils/datetime";
+import { formatTime, today } from "@/utils/datetime";
+import { exportPaged } from "@/utils/export";
 import { PASSWORD_HINT, passwordProblem } from "@/utils/password";
 
-const { query, rows, total, load, search } = usePagedList(
+const { query, rows, total, loading, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "", status: "" },
-  (q) => userApi.list({ ...q, keyword: q.keyword || undefined, status: q.status || undefined }),
+  (q) => userApi.list(q),
 );
+
+/** 导出：按当前查询条件导出全部匹配用户（CSV，Excel 可直接打开） */
+const exporting = ref(false);
+async function onExport() {
+  exporting.value = true;
+  try {
+    const count = await exportPaged(
+      (q) => userApi.list(q),
+      { keyword: query.keyword, status: query.status },
+      [
+        { title: "用户名", value: (r) => r.username },
+        { title: "姓名", value: (r) => r.name },
+        { title: "角色", value: (r) => r.roles.map((x) => x.role.name).join("、") },
+        { title: "手机号", value: (r) => r.phone },
+        { title: "邮箱", value: (r) => r.email },
+        { title: "状态", value: (r) => (r.status === "ENABLED" ? "启用" : "禁用") },
+        { title: "创建时间", value: (r) => formatTime(r.createdAt) },
+      ],
+      `用户列表_${today()}.csv`,
+    );
+    ElMessage.success(`已导出 ${count} 条`);
+  } finally {
+    exporting.value = false;
+  }
+}
 const dialogVisible = ref(false);
 const saving = ref(false);
 const editingId = ref<number | null>(null);

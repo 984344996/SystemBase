@@ -20,7 +20,6 @@ export function setupSwagger(app: INestApplication, isProd: boolean, logger: App
 
   let swagger: any;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     swagger = require('@nestjs/swagger');
   } catch {
     logger.warnFields({}, 'SWAGGER_ENABLED 已开启，但未安装 @nestjs/swagger，跳过 API 文档（pnpm --filter @sb/server add @nestjs/swagger）');

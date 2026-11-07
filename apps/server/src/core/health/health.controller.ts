@@ -6,6 +6,7 @@ import { resolve } from 'node:path';
 import { Public } from '../security/public.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppLogger } from '../logger/logger.service';
+import { RedisClientService } from '../redis/redis-client.service';
 
 /**
  * 当前运行的发布版本号：读取发布包根目录 RELEASE 文件中的 release=<14位时间戳>。
@@ -34,6 +35,7 @@ export class HealthController {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly logger: AppLogger,
+    private readonly redis: RedisClientService,
   ) {}
 
   /** 综合健康（保持原有语义：脚本与外部探活依赖它判断数据库是否可用） */
@@ -78,7 +80,7 @@ export class HealthController {
 
     // Redis 只在真正使用（LOCK_DRIVER=redis）时才作为依赖，否则不因未装 Redis 而判定未就绪
     if (this.config.get<string>('LOCK_DRIVER') === 'redis') {
-      checks.redis = await this.pingRedis();
+      checks.redis = await this.redis.ping(); // 复用应用的 Redis 连接，不为探活另建连接
       if (checks.redis !== 'up') ready = false;
     }
 
@@ -90,27 +92,6 @@ export class HealthController {
 
     if (!ready) res.status(HttpStatus.SERVICE_UNAVAILABLE);
     return { status: ready ? 'ready' : 'not-ready', checks, timestamp: new Date().toISOString() };
-  }
-
-  /** 轻量 Redis 探测：不引入额外依赖，仅在就绪检查时按需连接 */
-  private async pingRedis(): Promise<'up' | 'down'> {
-    const url = this.config.get<string>('REDIS_URL') || 'redis://localhost:6379';
-    let Redis: any;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      Redis = require('ioredis');
-    } catch {
-      return 'down';
-    }
-    const client = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 1, retryStrategy: () => null as any });
-    try {
-      const pong = await client.ping();
-      return pong === 'PONG' ? 'up' : 'down';
-    } catch {
-      return 'down';
-    } finally {
-      await client.quit().catch(() => undefined);
-    }
   }
 
   private logDirWritable(): boolean {

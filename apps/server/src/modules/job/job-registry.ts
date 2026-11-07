@@ -20,17 +20,19 @@ export interface JobHandler {
  * cron 存 DB、代码只注册 handler —— 修改执行时间/参数不用发版；
  * 新增任务类型只需部署一次带 @JobHandler 的代码。
  */
-export const JOB_HANDLERS = new Map<string, Function>();
+/** 处理器类（构造函数）：由 Nest 容器实例化，这里只登记类型 */
+export type JobHandlerClass = abstract new (...args: never[]) => unknown;
+
+export const JOB_HANDLERS = new Map<string, JobHandlerClass>();
 
 export const JOB_HANDLER_KEY = 'sb:jobHandlerKey';
 
 export function JobHandler(key: string): ClassDecorator {
-  // biome-ignore lint: ClassDecorator 签名要求
-  return (target: Function) => {
+  return (target) => {
     if (JOB_HANDLERS.has(key)) {
       throw new Error(`@JobHandler key 重复注册: ${key}`);
     }
-    JOB_HANDLERS.set(key, target);
+    JOB_HANDLERS.set(key, target as unknown as JobHandlerClass);
     Reflect.defineMetadata(JOB_HANDLER_KEY, key, target);
   };
 }

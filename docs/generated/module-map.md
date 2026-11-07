@@ -77,7 +77,7 @@ Service 方法：`list()`、`upload()`、`open()`、`remove()`、`purge()`
 | DELETE | /api/jobs/:id | `system:job:delete` | 删除任务 |
 | POST | /api/jobs/:id/run | `system:job:run` | 立即执行一次（手动触发） |
 
-Service 方法：`onModuleInit()`、`setImmediate()`、`onModuleDestroy()`、`clearInterval()`、`reconcile()`、`logs()`、`create()`、`update()`、`toggle()`、`remove()`、`runOnce()`、`cronJobName()`、`schedule()`、`runWithTraceId()`、`deschedule()`、`reschedule()`、`run()`、`reject()`、`clearTimeout()`、`resolveHandler()`、`nextRunAt()`、`handleMisfire()`、`assertCron()`
+Service 方法：`onModuleInit()`、`setImmediate()`、`onModuleDestroy()`、`clearInterval()`、`reconcile()`、`logs()`、`create()`、`update()`、`toggle()`、`remove()`、`runOnce()`、`clearTimeout()`、`schedule()`、`runWithTraceId()`、`deschedule()`、`reschedule()`、`run()`、`reject()`、`clearTimeout()`、`resolveHandler()`、`nextRunAt()`、`scheduledFireTime()`、`handleMisfire()`、`assertCron()`
 
 ## menu
 

@@ -1,8 +1,11 @@
 name: CI
 
-# 推送后的自动验证（与本地 pre-commit 卡口互补）：
-#   lint（tsc/vue-tsc/prisma validate）→ 后端单测（含覆盖率防倒退门）→ 全量构建 → E2E（独立 MySQL）
-# 本地开发跳过推送前检查也不怕：这里兜底。
+# 推送后的自动验证（与本地 pre-commit 卡口互补，本地跳过检查也有这里兜底）：
+#   lint-and-test  类型检查 + ESLint + prisma validate → 前后端单测（后端带覆盖率门）→ 全量构建 → 生成文档漂移检测
+#   gen-crud       代码生成器冒烟：生成样例模块 → 前后端类型检查 + 单测 + 前端构建（防止生成器模板与框架约定脱节）
+#   scripts        部署脚本检查：bash 语法 + shellcheck（Linux）、PowerShell 语法（Windows，本地 Mac 无法验证 .ps1）
+#   audit          依赖漏洞审计：生产依赖存在高危/严重漏洞时失败（框架会被复制到多个项目，漏洞会跟着扩散）
+#   e2e            主链路 E2E（独立 MySQL）
 
 on:
   push:
@@ -10,19 +13,22 @@ on:
   pull_request:
     branches: [master, main]
 
+# 同一分支的新推送会取消还在跑的旧任务
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      # pnpm 版本取 package.json 的 packageManager；先装 pnpm，setup-node 才能缓存 pnpm store
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      # pnpm 版本与仓库 packageManager 锁定值一致
-      - name: 启用 pnpm
-        run: corepack enable
+          cache: pnpm
 
       - name: 安装依赖
         run: pnpm install --frozen-lockfile
@@ -32,11 +38,14 @@ jobs:
           pnpm --filter @sb/shared build
           pnpm --filter @sb/server prisma:generate
 
-      - name: Lint（server: tsc + prisma validate / web: vue-tsc）
-        run: pnpm -r lint
+      - name: Lint（tsc / vue-tsc / prisma validate / ESLint）
+        run: pnpm lint
 
       - name: 后端单元测试（含覆盖率防倒退门）
         run: pnpm --filter @sb/server test -- --coverage --silent
+
+      - name: 前端单元测试
+        run: pnpm --filter @sb/web test
 
       - name: 全量构建
         run: pnpm build
@@ -49,6 +58,87 @@ jobs:
             git diff --stat docs/generated
             exit 1
           fi
+
+  gen-crud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @sb/shared build
+
+      - name: 生成样例模块 ci-sample，并按生成器提示补上 Prisma 模型与模块注册
+        run: |
+          node scripts/gen-crud.mjs ci-sample --title CI样例
+          cat >> apps/server/prisma/schema.prisma <<'EOF'
+
+          model CiSample {
+            id        Int       @id @default(autoincrement())
+            name      String    @db.VarChar(50)
+            code      String?   @unique @db.VarChar(50)
+            status    String    @default("ENABLED") @db.VarChar(20)
+            remark    String?   @db.VarChar(255)
+            createdAt DateTime  @default(now())
+            updatedAt DateTime  @updatedAt
+            deletedAt DateTime?
+
+            @@map("ci_sample")
+          }
+          EOF
+          sed -i "s#^import { ExampleModule } from './modules/example/example.module';#&\nimport { CiSampleModule } from './modules/ci-sample/ci-sample.module';#" apps/server/src/app.module.ts
+          sed -i "s#^    ExampleModule,#&\n    CiSampleModule,#" apps/server/src/app.module.ts
+          grep -q CiSampleModule, apps/server/src/app.module.ts
+
+      - name: 生成产物：后端类型检查 + 单测
+        run: |
+          pnpm --filter @sb/server prisma:generate
+          pnpm --filter @sb/server exec tsc --noEmit -p tsconfig.json
+          pnpm --filter @sb/server exec jest src/modules/ci-sample
+
+      - name: 生成产物：前端类型检查 + 构建
+        run: pnpm --filter @sb/web build
+
+  scripts:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash 语法 + shellcheck（只报 warning 及以上）
+        if: runner.os == 'Linux'
+        run: |
+          for f in deploy.sh sb.sh start-local.sh deploy/server/*.sh .githooks/pre-commit; do bash -n "$f"; done
+          # SC2086/SC2046：mysql_args 等需要按空格拆分参数（有意为之）；SC2010：版本目录名为纯数字，ls|grep 安全
+          shellcheck -S warning -e SC2086,SC2046,SC2010,SC2155,SC1091,SC2034 deploy.sh sb.sh start-local.sh deploy/server/*.sh
+
+      - name: PowerShell 语法（deploy.ps1 / sb.ps1 / start-local.ps1）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($f in @('deploy.ps1', 'sb.ps1', 'start-local.ps1')) {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { $failed = $true; $errors | ForEach-Object { Write-Host "::error file=$f,line=$($_.Extent.StartLineNumber)::$($_.Message)" } }
+          }
+          if ($failed) { exit 1 }
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: 生产依赖漏洞审计（高危 / 严重即失败）
+        run: pnpm audit --prod --audit-level high
 
   e2e:
     runs-on: ubuntu-latest
@@ -71,21 +161,15 @@ jobs:
       E2E_DATABASE_URL: mysql://root:root@127.0.0.1:3306/system_base_e2e
     steps:
       - uses: actions/checkout@v4
-
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-
-      - name: 启用 pnpm
-        run: corepack enable
-
-      - name: 安装依赖
-        run: pnpm install --frozen-lockfile
-
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: 构建共享包 + 生成 Prisma Client
         run: |
           pnpm --filter @sb/shared build
           pnpm --filter @sb/server prisma:generate
-
-      - name: E2E 主链路冒烟（登录/权限/CRUD/错误码）
+      - name: E2E 主链路冒烟（登录/权限/CRUD/错误码/隐藏菜单）
         run: pnpm --filter @sb/server test:e2e

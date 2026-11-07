@@ -6,7 +6,7 @@
       <el-button v-permission="'system:job:create'" type="primary" plain @click="openCreate">新增任务</el-button>
     </div>
 
-    <el-table :data="rows" border stripe>
+    <el-table v-loading="loading" :data="rows" border stripe>
       <el-table-column prop="name" label="任务名" width="150" />
       <el-table-column label="处理器" width="170">
         <template #default="{ row }">
@@ -94,7 +94,7 @@
         </el-select>
         <span class="mini">数据来自当日日志文件（category=job, event=run）</span>
       </div>
-      <el-table :data="logRows" border size="small">
+      <el-table v-loading="logLoading" :data="logRows" border size="small">
         <el-table-column label="状态" width="110">
           <template #default="{ row }">
             <el-tag :type="logTag(row.status)" size="small">{{ row.status }}</el-tag>
@@ -146,8 +146,15 @@ function logTag(s: string): "success" | "danger" | "warning" | "info" {
   return ({ SUCCESS: "success", FAILED: "danger", TIMEOUT: "warning", SKIPPED_LOCK: "info" } as const)[s] ?? "info";
 }
 
+/** 任务列表加载（表格显示 loading） */
+const loading = ref(false);
 async function load() {
-  rows.value = await jobApi.list();
+  loading.value = true;
+  try {
+    rows.value = await jobApi.list();
+  } finally {
+    loading.value = false;
+  }
 }
 
 function openCreate() {
@@ -217,7 +224,10 @@ async function runNow(row: JobRow) {
   ElMessage.info("已触发执行");
   try {
     const res = await jobApi.run(row.id);
-    if (res?.status === "SUCCESS") ElMessage.success(`执行成功：${res.result?.slice(0, 80) || "无返回"}`);
+    // 后端最多等 5 秒：没执行完返回 RUNNING（任务在后台继续），结果到「执行记录」里看
+    if (res?.status === "RUNNING") ElMessage.info("任务执行时间较长，已转入后台执行，稍后在「执行记录」中查看结果");
+    else if (res?.status === "SUCCESS") ElMessage.success(`执行成功：${res.result?.slice(0, 80) || "无返回"}`);
+    else if (res?.status === "SKIPPED_LOCK") ElMessage.warning("该任务正在执行中（其他实例或上一次尚未结束），本次已跳过");
     else ElMessage.error(`执行失败：${res?.error?.slice(0, 120) || "未知错误"}`);
     load();
   } finally {
@@ -243,10 +253,17 @@ function reloadLogs() {
   loadLogs();
 }
 
+/** 执行记录加载（表格显示 loading） */
+const logLoading = ref(false);
 async function loadLogs() {
-  const res = await jobApi.logs({ ...logQuery, status: logQuery.status || undefined });
-  logRows.value = res.list;
-  logTotal.value = res.total;
+  logLoading.value = true;
+  try {
+    const res = await jobApi.logs({ ...logQuery, status: logQuery.status || undefined });
+    logRows.value = res.list;
+    logTotal.value = res.total;
+  } finally {
+    logLoading.value = false;
+  }
 }
 
 onMounted(async () => {
@@ -257,12 +274,12 @@ onMounted(async () => {
 
 <style scoped>
 .muted {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 .mini {
   font-size: 12px;
-  color: #66707e;
+  color: var(--el-text-color-regular);
 }
 .drawer-toolbar {
   display: flex;
@@ -272,12 +289,12 @@ onMounted(async () => {
 }
 .cron-tip {
   font-size: 12px;
-  color: #aab4c0;
+  color: var(--el-text-color-placeholder);
   margin-top: 4px;
   line-height: 1.5;
 }
 .err {
-  color: #f56c6c;
+  color: var(--el-color-danger);
   white-space: pre-wrap;
   font-size: 12px;
 }

@@ -1,6 +1,8 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { NotFoundException } from '@nestjs/common';
 import { DictService } from './dict.service';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { localEventBus } from '../../core/redis/testing';
+import { BizCode } from '../../core/filter/business.exception';
 
 function setup() {
   const prisma: any = {
@@ -19,15 +21,15 @@ function setup() {
       delete: jest.fn(),
     },
   };
-  const service = new DictService(prisma as unknown as PrismaService);
+  const service = new DictService(prisma as unknown as PrismaService, localEventBus());
   return { service, prisma };
 }
 
 describe('DictService 字典类型', () => {
-  it('编码重复 → 400', async () => {
+  it('编码重复 → 409（业务码 40901）', async () => {
     const { service, prisma } = setup();
     prisma.dict.findUnique.mockResolvedValue({ id: 1, code: 'user_status' });
-    await expect(service.create({ code: 'user_status', name: '状态' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.create({ code: 'user_status', name: '状态' })).rejects.toMatchObject({ response: { bizCode: BizCode.DUPLICATE } });
   });
 
   it('更新/删除不存在的字典 → 404', async () => {
@@ -45,11 +47,11 @@ describe('DictService 字典项', () => {
     await expect(service.addItem(9, { label: 'a', value: 'A' })).rejects.toBeInstanceOf(NotFoundException);
   });
 
-  it('同字典下选项值重复 → 400', async () => {
+  it('同字典下选项值重复 → 409（业务码 40901）', async () => {
     const { service, prisma } = setup();
     prisma.dict.findUnique.mockResolvedValue({ id: 1, code: 'user_status' });
     prisma.dictItem.findUnique.mockResolvedValue({ id: 5, value: 'ENABLED' });
-    await expect(service.addItem(1, { label: '启用2', value: 'ENABLED' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.addItem(1, { label: '启用2', value: 'ENABLED' })).rejects.toMatchObject({ response: { bizCode: BizCode.DUPLICATE } });
     expect(prisma.dictItem.create).not.toHaveBeenCalled();
   });
 

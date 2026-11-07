@@ -3,7 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SystemBase 管理系统</title>
+    <title>SystemBase</title>
+    <script>
+      // 在页面渲染前先应用深色主题，避免刷新时先白屏再变黑（逻辑与 src/utils/theme.ts 一致，键名 sb_theme）
+      (function () {
+        try {
+          var mode = localStorage.getItem("sb_theme") || "system";
+          var dark = mode === "dark" || (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

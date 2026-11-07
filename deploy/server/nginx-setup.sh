@@ -42,7 +42,8 @@ MARK="# managed by systembase($APP_NAME)"   # 注入行的尾注释，用于识�
 mkdir -p "$SNIPPET_DIR"
 
 # ---------- 备份 / 还原：nginx -t 失败时恢复本次修改过的所有文件 ----------
-BACKUPS=""
+BACKUPS=""   # 被修改的文件（同目录 .sb-bak 备份）
+MOVED=""     # 被停用的默认站点：「原路径=新路径」或「link:软链路径」
 
 # 备份文件（同一文件只备份一次，保证还原的是最初内容）
 backup() {
@@ -52,10 +53,16 @@ backup() {
   BACKUPS="$BACKUPS $1"
 }
 
-# 还原所有备份过的文件
+# 还原所有备份过的文件，并把停用的默认站点放回原处
 restore_all() {
-  local f
+  local f m
   for f in $BACKUPS; do [ -f "$f.sb-bak" ] && mv -f "$f.sb-bak" "$f"; done
+  for m in $MOVED; do
+    case "$m" in
+      link:*) f="${m#link:}"; [ -f /etc/nginx/sites-available/default ] && ln -sf /etc/nginx/sites-available/default "$f" ;;
+      *=*)    [ -f "${m#*=}" ] && mv -f "${m#*=}" "${m%%=*}" ;;
+    esac
+  done
 }
 
 # 成功后删除备份文件
@@ -77,6 +84,18 @@ other_site_files() {
 backup "$SNIPPET"
 sed -e "s#__PREFIX__#$SITE_PATH#g" -e "s#__PORT__#$PORT#g" -e "s#__APP_DIR__#$APP_DIR#g" \
   < "$HERE/nginx-locations.conf" | tr -d '\r' > "$SNIPPET"
+# 子路径部署：不带尾斜杠的入口（如 /systembase-pre）不匹配 location /systembase-pre/，
+# 在共享域名的 server 块里会落到那个站点自己的 location /（打开的是别的系统的页面），这里精确匹配后跳转
+#   return 以 / 开头时 nginx 按本次请求的协议、域名、端口拼出完整地址（443 → https，8080 → :8080）
+if [ -n "$SITE_PATH" ]; then
+  cat >> "$SNIPPET" <<EOF
+
+# ---- 不带尾斜杠的入口 $SITE_PATH → $SITE_PATH/（保留查询参数） ----
+location = $SITE_PATH {
+    return 301 $SITE_PATH/\$is_args\$args;
+}
+EOF
+fi
 echo "    路由片段: $SNIPPET（路径前缀: ${SITE_PATH:-/} → 后端 127.0.0.1:$PORT）"
 
 # ============================================================
@@ -96,18 +115,42 @@ install_site() {  # $1 = 目标文件
     echo "    站点配置: $1（监听 :$SITE_PORT  域名: $SITE_DOMAIN）"
   fi
 }
+# 停用系统自带的默认站点（只在确实冲突时，且绝不删除内容）
+#   $1 = 默认站点文件（conf.d/default.conf 或 sites-enabled/default）
+#   - 不监听本站点端口 SITE_PORT：互不影响，保留不动
+#   - 声明了真实域名或 HTTPS 证书：视为你自己的站点，保留不动，只提示
+#   - 否则（安装 nginx 自带的欢迎页）：软链直接摘掉（原文件仍在 sites-available），
+#     普通文件移到 /etc/nginx/sb-disabled/ 保存（不会被 nginx 加载，需要时可移回）
+disable_default_site() {
+  local f="$1" dst
+  [ -e "$f" ] || return 0
+  grep -qE "listen[[:space:]]+([^;]*:)?$SITE_PORT([[:space:];]|$)" "$f" || return 0
+  if grep -qE "ssl_certificate|server_name[[:space:]]+[^;]*[A-Za-z0-9-]+\.[A-Za-z]{2,}" "$f"; then
+    echo "    !! $f 同样监听 :$SITE_PORT 且包含真实域名/证书，判断为已有站点，保留不动（如有冲突请手动调整）"
+    return 0
+  fi
+  if [ -L "$f" ]; then
+    rm -f "$f"
+    MOVED="$MOVED link:$f"
+    echo "    已停用默认站点（软链）: $f"
+  else
+    mkdir -p /etc/nginx/sb-disabled
+    dst="/etc/nginx/sb-disabled/$(basename "$f").$(date +%Y%m%d%H%M%S)"
+    mv -f "$f" "$dst"
+    MOVED="$MOVED $f=$dst"
+    echo "    已停用默认站点（与本站点同监听 :$SITE_PORT）: $f → $dst"
+  fi
+}
+
 if [ -d /etc/nginx/sites-available ]; then
-  # Debian / Ubuntu：sites-available 存文件，sites-enabled 软链启用；去掉系统默认站点
+  # Debian / Ubuntu：sites-available 存文件，sites-enabled 软链启用
   install_site "/etc/nginx/sites-available/$APP_NAME"
   ln -sf "/etc/nginx/sites-available/$APP_NAME" "/etc/nginx/sites-enabled/$APP_NAME"
-  rm -f /etc/nginx/sites-enabled/default
+  disable_default_site /etc/nginx/sites-enabled/default
 else
-  # CentOS / OpenCloudOS：conf.d/*.conf 直接生效；去掉系统默认站点（先备份）
+  # CentOS / OpenCloudOS：conf.d/*.conf 直接生效
   install_site "/etc/nginx/conf.d/$APP_NAME.conf"
-  if [ -f /etc/nginx/conf.d/default.conf ]; then
-    backup /etc/nginx/conf.d/default.conf
-    rm -f /etc/nginx/conf.d/default.conf
-  fi
+  disable_default_site /etc/nginx/conf.d/default.conf
 fi
 rm -f "$SITE_CONF"
 

@@ -3,8 +3,8 @@
 install:            ## 安装全部依赖
 	pnpm install
 
-dev:                ## 并行启动前后端(热更新)
-	pnpm dev
+dev:                ## 本地一键启动（同 ./sb.sh local start：建 .env 软链、迁移、种子、前后端后台运行）
+	bash ./sb.sh local start
 
 build:              ## 构建全部包
 	pnpm build

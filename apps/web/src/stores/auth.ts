@@ -1,4 +1,5 @@
 import { defineStore } from "pinia";
+import { SUPER_ROLE } from "@sb/shared";
 import { authApi, type LoginResult, type MenuNode, type Profile } from "@/api/auth";
 import { resetDynamicRoutes } from "@/stores/permission";
 import { TOKEN_KEY, REFRESH_TOKEN_KEY, clearAuth } from "@/utils/request";
@@ -19,7 +20,7 @@ export const useAuthStore = defineStore("auth", {
   }),
   getters: {
     isLoggedIn: (s) => !!s.token,
-    isSuper: (s) => s.user?.roleCodes?.includes("SUPER_ADMIN") ?? false,
+    isSuper: (s) => s.user?.roleCodes?.includes(SUPER_ROLE) ?? false,
   },
   actions: {
     async login(payload: {

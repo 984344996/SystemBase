@@ -27,13 +27,13 @@ const from = computed(() => (typeof route.query.from === "string" ? route.query.
 .code {
   font-size: 72px;
   font-weight: 800;
-  color: #e6a23c;
+  color: var(--el-color-warning);
 }
 .txt {
-  color: #606266;
+  color: var(--el-text-color-regular);
 }
 .sub {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 </style>

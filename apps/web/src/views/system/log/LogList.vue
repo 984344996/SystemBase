@@ -88,58 +88,51 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
+import { onMounted, ref } from "vue";
+import { usePagedList } from "@/composables/usePagedList";
 import { ElMessage } from "element-plus";
-import { monitorApi, type LogEntry } from "@/api/system";
+import { monitorApi } from "@/api/system";
 import { formatSize, today } from "@/utils/datetime";
 import { LOG_CATEGORY_OPTIONS, LOG_LEVEL_OPTIONS, entryDetail, levelTagType, saveBlob } from "@/utils/log";
 
 const files = ref<{ date: string; size: number }[]>([]);
-const rows = ref<LogEntry[]>([]);
-const total = ref(0);
+/** 命中过多时后端只保留最新一部分，页面上提示 */
 const truncated = ref(false);
-const loading = ref(false);
-const query = reactive({
-  date: today(),
-  source: "server" as "server" | "client",
-  level: "",
-  category: "",
-  traceId: "",
-  keyword: "",
-  page: 1,
-  pageSize: 20,
-});
+const { query, rows, total, loading, load, search } = usePagedList(
+  {
+    date: today(),
+    source: "server" as "server" | "client",
+    level: "",
+    category: "",
+    traceId: "",
+    keyword: "",
+    page: 1,
+    pageSize: 20,
+  },
+  async (q, { signal }) => {
+    const res = await monitorApi.logs(
+      {
+        date: q.date,
+        source: q.source,
+        // 前端日志没有 category 分类，级别过滤也仅在后端日志下有意义
+        level: q.source === "server" ? q.level : undefined,
+        category: q.source === "server" ? q.category : undefined,
+        traceId: q.traceId.trim(),
+        keyword: q.keyword,
+        page: q.page,
+        pageSize: q.pageSize,
+      },
+      signal,
+    );
+    truncated.value = res.truncated;
+    return res;
+  },
+);
 
 function categoryLabel(v?: string) {
   return LOG_CATEGORY_OPTIONS.find((c) => c.value === v)?.label || v || "-";
 }
 
-async function load() {
-  loading.value = true;
-  try {
-    const res = await monitorApi.logs({
-      date: query.date,
-      source: query.source,
-      // 前端日志没有 category 分类，级别过滤也仅在后端日志下有意义
-      level: query.source === "server" ? query.level || undefined : undefined,
-      category: query.source === "server" ? query.category || undefined : undefined,
-      traceId: query.traceId.trim() || undefined,
-      keyword: query.keyword || undefined,
-      page: query.page,
-      pageSize: query.pageSize,
-    });
-    rows.value = res.list;
-    total.value = res.total;
-    truncated.value = res.truncated;
-  } finally {
-    loading.value = false;
-  }
-}
-
-function search() {
-  query.page = 1;
-  load();
-}
 
 /** 点击 traceId：只看这一次请求的完整链路（跨分类） */
 function filterTrace(traceId: string) {
@@ -169,7 +162,7 @@ onMounted(async () => {
 .log-json {
   margin: 0;
   padding: 8px 12px;
-  background: #f7f8fa;
+  background: var(--el-fill-color-lighter);
   border-radius: 4px;
   font-size: 12px;
   white-space: pre-wrap;

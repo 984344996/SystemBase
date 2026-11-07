@@ -4,6 +4,7 @@ import * as bcrypt from 'bcryptjs';
 import { createHash } from 'node:crypto';
 import { AuthService } from './auth.service';
 import { LoginGuardService } from '../../core/security/login-guard.service';
+import { localStore } from '../../core/redis/testing';
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 const req = { ip: '10.0.0.8', headers: { 'user-agent': 'jest' } } as any;
@@ -23,7 +24,7 @@ function setup() {
   const jwt = { signAsync: jest.fn().mockResolvedValue('access-token') };
   const logger = { audit: jest.fn(), warn: jest.fn() };
   const permCache = { invalidateUser: jest.fn() };
-  const guard = new LoginGuardService(new ConfigService({}), logger as any);
+  const guard = new LoginGuardService(new ConfigService({}), logger as any, localStore());
   const service = new AuthService(
     prisma as any,
     jwt as any,

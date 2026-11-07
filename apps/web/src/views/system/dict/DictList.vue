@@ -102,6 +102,7 @@
 </template>
 
 <script setup lang="ts">
+import { useDictStore } from "@/stores/dict";
 import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import { dictApi, type DictItemRow, type DictRow } from "@/api/dict";
@@ -159,6 +160,7 @@ async function submitDict() {
     const { id, code, name, status, remark } = dictForm;
     if (id) await dictApi.update(id, { name, status, remark });
     else await dictApi.create({ code, name, status, remark });
+    dictStore.invalidate(code);
     ElMessage.success("保存成功");
     dictDialog.value = false;
     loadDicts();
@@ -187,6 +189,7 @@ async function submitItem() {
     const data = { label, value, sort, status, remark };
     if (id) await dictApi.updateItem(id, data);
     else await dictApi.addItem(current.value.id, data);
+    dictStore.invalidate(current.value.code); // 让各页面的 DictSelect / DictTag 下次使用时重新拉取
     ElMessage.success("保存成功");
     itemDialog.value = false;
     selectDict(current.value);
@@ -198,10 +201,12 @@ async function submitItem() {
 async function removeItem(row: DictItemRow) {
   if (!current.value) return;
   await dictApi.removeItem(row.id);
+  dictStore.invalidate(current.value.code);
   ElMessage.success("已删除");
   selectDict(current.value);
 }
 
+const dictStore = useDictStore();
 onMounted(loadDicts);
 </script>
 
@@ -210,11 +215,11 @@ onMounted(loadDicts);
 .card-header { display: flex; align-items: center; justify-content: space-between; }
 .dict-list { margin-top: 10px; max-height: 60vh; overflow: auto; }
 .dict-item { padding: 8px 10px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; }
-.dict-item:hover { background: #f5f7fa; }
-.dict-item.active { background: #ecf5ff; box-shadow: inset 2px 0 0 #409eff; }
+.dict-item:hover { background: var(--el-fill-color-light); }
+.dict-item.active { background: var(--el-color-primary-light-9); box-shadow: inset 2px 0 0 var(--el-color-primary); }
 .dict-item-main { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .dict-name { font-weight: 500; }
-.dict-code { color: #909399; font-size: 12px; margin-top: 2px; }
+.dict-code { color: var(--el-text-color-secondary); font-size: 12px; margin-top: 2px; }
 @media (max-width: 1280px) {
   .dict-page { grid-template-columns: 1fr; }
 }

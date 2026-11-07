@@ -111,9 +111,17 @@ writeIfChanged(join(ROOT, 'docs/generated/module-map.md'), map);
 
 // ---------- 2. 权限码对照表 ----------
 const seedPerms = new Set();
-// seed 的 perm(menuId, '名称', 'system:xxx:yyy', sort) —— 权限码是第三个参数
-for (const m of read(join(ROOT, 'apps/server/src/database/seed.ts')).matchAll(/perm\([^,]+,[^,]+,\s*'([^']+)'/g)) {
+const seedText = read(join(ROOT, 'apps/server/src/database/seed.ts'));
+// seed 的 perm(menuId, '名称', 'system:xxx:yyy', sort) —— 按钮权限码是第三个参数
+for (const m of seedText.matchAll(/perm\([^,]+,[^,]+,\s*'([^']+)'/g)) {
   seedPerms.add(m[1]);
+}
+// ensureMenu({ ..., permission: 'system:xxx:list' }) —— 菜单本身的权限码（列表/查看类）：
+// 由「有没有这个菜单」控制页面可见，前端一般不再写 v-permission，不算未使用
+const menuPerms = new Set();
+for (const m of seedText.matchAll(/permission:\s*'([^']+)'/g)) {
+  seedPerms.add(m[1]);
+  menuPerms.add(m[1]);
 }
 
 const frontendUsage = new Map(); // code -> [文件:行]
@@ -142,6 +150,9 @@ for (const code of [...allCodes].sort()) {
   let status;
   if (defined && used.length) {
     status = '✓';
+    okCount++;
+  } else if (menuPerms.has(code)) {
+    status = '✓ 菜单权限（随菜单控制页面可见）';
     okCount++;
   } else if (defined) {
     status = '⚠ 已定义未使用（保留给 API 调用方或后续页面）';

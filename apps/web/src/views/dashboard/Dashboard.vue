@@ -18,7 +18,7 @@
       <el-col :span="8">
         <div class="stat-card">
           <div class="stat-label">服务状态</div>
-          <div class="stat-value" :style="{ color: healthy ? '#67c23a' : '#f56c6c' }">
+          <div class="stat-value" :style="{ color: healthy ? 'var(--el-color-success)' : 'var(--el-color-danger)' }">
             {{ healthy ? "正常" : "异常" }}
           </div>
           <div class="stat-sub">后端探活 /api/health</div>
@@ -60,12 +60,12 @@ onMounted(async () => {
 
 <style scoped>
 .stat-card {
-  background: #fff;
+  background: var(--el-bg-color);
   border-radius: 8px;
   padding: 20px;
 }
 .stat-label {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 .stat-value {
@@ -74,7 +74,7 @@ onMounted(async () => {
   margin: 8px 0 4px;
 }
 .stat-sub {
-  color: #aab4c0;
+  color: var(--el-text-color-placeholder);
   font-size: 12px;
 }
 h3 {

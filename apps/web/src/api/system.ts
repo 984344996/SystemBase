@@ -99,17 +99,19 @@ export type LogPage<T> = PageResult<T> & { date: string; truncated: boolean };
 
 export const monitorApi = {
   dates: () => request.get<never, { date: string; size: number }[]>("/monitor/logs/dates"),
-  logs: (params: Record<string, unknown>) => request.get<never, LogPage<LogEntry>>("/monitor/logs", { params }),
+  /** signal：传入后可取消（列表页切换条件时取消上一次请求） */
+  logs: (params: Record<string, unknown>, signal?: AbortSignal) =>
+    request.get<never, LogPage<LogEntry>>("/monitor/logs", { params, signal }),
   download: (date: string, source: LogSource = "server") =>
     request.get<never, Blob>("/monitor/logs/download", {
       params: { date, source },
       responseType: "blob",
       timeout: 120000,
     }),
-  loginLogs: (params: Record<string, unknown>) =>
-    request.get<never, LogPage<LoginLogRow>>("/monitor/login-logs", { params }),
-  operateLogs: (params: Record<string, unknown>) =>
-    request.get<never, LogPage<OperateLogRow>>("/monitor/operate-logs", { params }),
+  loginLogs: (params: Record<string, unknown>, signal?: AbortSignal) =>
+    request.get<never, LogPage<LoginLogRow>>("/monitor/login-logs", { params, signal }),
+  operateLogs: (params: Record<string, unknown>, signal?: AbortSignal) =>
+    request.get<never, LogPage<OperateLogRow>>("/monitor/operate-logs", { params, signal }),
 };
 
 // ---------- 定时任务 ----------
@@ -149,5 +151,6 @@ export const jobApi = {
   update: (id: number, data: Partial<JobRow> & { params?: string }) => request.put<never, JobRow>(`/jobs/${id}`, data),
   toggle: (id: number) => request.put<never, JobRow>(`/jobs/${id}/toggle`),
   remove: (id: number) => request.delete<never, DeleteResult>(`/jobs/${id}`),
+  /** 立即执行：status = SUCCESS / FAILED / TIMEOUT / SKIPPED_LOCK，或 RUNNING（超过 5 秒转后台执行） */
   run: (id: number) => request.post<never, { status: string; result?: string; error?: string }>(`/jobs/${id}/run`),
 };

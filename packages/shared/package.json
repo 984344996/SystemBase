@@ -1,6 +1,6 @@
 {
   "name": "@sb/shared",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "SystemBase 前后端共享常量与类型",
   "files": ["dist"],

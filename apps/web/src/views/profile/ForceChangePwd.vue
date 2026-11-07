@@ -31,7 +31,7 @@
       </div>
       <ul class="rules">
         <li v-for="r in rules" :key="r.text" :class="{ ok: r.pass }">
-          <el-icon><component :is="r.pass ? 'CircleCheck' : 'CircleClose'" /></el-icon>
+          <MenuIcon :name="r.pass ? 'CircleCheck' : 'CircleClose'" />
           {{ r.text }}
         </li>
       </ul>
@@ -105,7 +105,7 @@ function onLogout() {
 }
 .force-card {
   width: 460px;
-  background: rgba(255, 255, 255, 0.97);
+  background: var(--sb-glass-bg);
   border-radius: 12px;
   padding: 36px 36px 28px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
@@ -113,7 +113,7 @@ function onLogout() {
 .force-title {
   font-size: 22px;
   font-weight: 700;
-  color: #12365f;
+  color: var(--sb-brand-title);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -126,7 +126,7 @@ function onLogout() {
 }
 .force-sub {
   margin: 8px 0 22px;
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -145,13 +145,13 @@ function onLogout() {
   height: 6px;
   flex: 1;
   border-radius: 3px;
-  background: #dcdfe6;
+  background: var(--el-border-color);
   transition: all 0.25s;
 }
-.bar.lv-1 { background: #f56c6c; }
-.bar.lv-2 { background: #e6a23c; }
-.bar.lv-3 { background: #67c23a; }
-.strength-text { font-size: 12px; color: #909399; width: 32px; }
+.bar.lv-1 { background: var(--el-color-danger); }
+.bar.lv-2 { background: var(--el-color-warning); }
+.bar.lv-3 { background: var(--el-color-success); }
+.strength-text { font-size: 12px; color: var(--el-text-color-secondary); width: 32px; }
 .rules {
   list-style: none;
   margin: 0 0 20px;
@@ -160,10 +160,10 @@ function onLogout() {
   grid-template-columns: 1fr 1fr;
   gap: 6px 12px;
   font-size: 12px;
-  color: #909399;
+  color: var(--el-text-color-secondary);
 }
 .rules li { display: flex; align-items: center; gap: 4px; }
-.rules li.ok { color: #67c23a; }
+.rules li.ok { color: var(--el-color-success); }
 .actions {
   display: flex;
   align-items: center;

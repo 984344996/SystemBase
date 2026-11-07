@@ -1,11 +1,10 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
-import { RedisClientService } from '../redis/redis.module';
+import { EventBusService } from '../redis/event-bus.service';
 import type { AuthUser } from './jwt.strategy';
 
-/** 权限失效广播频道（LOCK_DRIVER=redis 时启用） */
-const CHANNEL = 'sb:perm:invalidate';
+/** 权限失效事件主题：payload 为 'all' 或 'user:<id>' */
+const TOPIC = 'perm:invalidate';
 
 /** 查库前取的版本快照，写回时比对，防止「失效前发起的查询」把旧数据写回缓存 */
 export interface CacheTicket {
@@ -27,45 +26,28 @@ const MAX_ENTRIES = 10_000;
  * 目的：JwtStrategy 每个请求都要 user→roles→menus 三层关联查询，缓存后 TTL 内只查一次。
  * 一致性：
  * - 本实例：用户/角色/菜单变更时由对应 Service 主动失效，立即生效
- * - 多实例：其他实例最多延迟 PERMISSION_CACHE_TTL 秒（默认 30）生效；要求强一致可设为 0 关闭缓存
+ * - 多实例：LOCK_DRIVER=redis 时经事件广播立即失效；未启用 Redis 时其他实例最多延迟
+ *   PERMISSION_CACHE_TTL 秒（默认 30）生效，要求强一致可设为 0 关闭缓存
  */
 @Injectable()
-export class PermissionCacheService implements OnModuleDestroy {
+export class PermissionCacheService {
   private readonly ttlMs: number;
   private readonly entries = new Map<number, Entry>();
   private globalVersion = 0;
   private readonly userVersions = new Map<number, number>();
 
   /**
-   * 多实例一致性：LOCK_DRIVER=redis 时通过 Redis pub/sub 广播失效事件，
-   * 让其他实例立即丢弃缓存（否则要等 PERMISSION_CACHE_TTL 秒才生效）。
-   * Redis 不可用时自动退化为「仅本实例失效」，不影响功能。
+   * 多实例一致性：失效事件经 EventBusService 广播（LOCK_DRIVER=redis 时跨实例，
+   * 否则只在本进程），其他实例收到后立即丢弃缓存，不必等 PERMISSION_CACHE_TTL 过期。
+   * 广播失败时退化为「仅本实例失效」，其他实例最多延迟 TTL 秒，不影响功能。
    */
-  private readonly broadcastEnabled: boolean;
-  private pub: Redis | null = null;
-  private sub: Redis | null = null;
-
-  constructor(config: ConfigService, redisClients: RedisClientService) {
+  constructor(
+    config: ConfigService,
+    private readonly bus: EventBusService,
+  ) {
     this.ttlMs = Math.max(0, Number(config.get<string>('PERMISSION_CACHE_TTL') ?? 30)) * 1000;
-    this.broadcastEnabled = redisClients.enabled;
-    if (this.broadcastEnabled) {
-      this.pub = redisClients.createConnection();
-      this.sub = redisClients.createConnection();
-      this.sub
-        ?.connect()
-        .then(() =>
-          this.sub?.subscribe(CHANNEL).then(() =>
-            // 收到广播：本地执行失效（不回播，避免循环）
-            this.sub?.on('message', (_ch, payload) => this.applyRemote(payload)),
-          ),
-        )
-        .catch(() => undefined);
-    }
-  }
-
-  async onModuleDestroy(): Promise<void> {
-    await this.pub?.quit().catch(() => undefined);
-    await this.sub?.quit().catch(() => undefined);
+    // 本实例与其他实例的失效事件都走这里处理
+    this.bus.subscribe(TOPIC, (payload) => this.apply(payload));
   }
 
   get enabled(): boolean {
@@ -96,31 +78,20 @@ export class PermissionCacheService implements OnModuleDestroy {
 
   /** 单个用户变更（状态/角色/删除）后调用 */
   invalidateUser(userId: number): void {
-    this.entries.delete(userId);
-    this.userVersions.set(userId, (this.userVersions.get(userId) ?? 0) + 1);
-    this.publish(`user:${userId}`);
+    this.bus.publish(TOPIC, `user:${userId}`);
   }
 
   /** 角色/菜单(权限点)变更后调用：影响面无法精确计算，全部失效 */
   invalidateAll(): void {
-    this.globalVersion++;
-    this.entries.clear();
-    this.userVersions.clear(); // 全局版本已变，旧的用户版本不再有意义
-    this.publish('all');
+    this.bus.publish(TOPIC, 'all');
   }
 
-  /** 广播失效事件（多实例）：失败静默，退化为仅本实例失效 */
-  private publish(payload: string): void {
-    if (!this.broadcastEnabled || !this.pub) return;
-    this.pub.publish(CHANNEL, payload).catch(() => undefined);
-  }
-
-  /** 处理其他实例广播过来的失效事件：只改本地，不再广播 */
-  private applyRemote(payload: string): void {
+  /** 执行失效（本实例发起或其他实例广播过来的都走这里） */
+  private apply(payload: string): void {
     if (payload === 'all') {
       this.globalVersion++;
       this.entries.clear();
-      this.userVersions.clear();
+      this.userVersions.clear(); // 全局版本已变，旧的用户版本不再有意义
       return;
     }
     const id = Number(payload.replace('user:', ''));

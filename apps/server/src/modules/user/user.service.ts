@@ -10,6 +10,7 @@ import { SUPER_ROLE } from '../../core/security/permissions.guard';
 import { AuthUser } from '../../core/security/jwt.strategy';
 import { assertPasswordUsable } from '../auth/auth.service';
 import { CreateUserDto, QueryUserDto, UpdateUserDto } from './user.dto';
+import { duplicate } from '../../core/filter/business.exception';
 
 /**
  * 对外输出字段：显式 select，绝不含 password 哈希。
@@ -56,7 +57,7 @@ export class UserService {
   async create(dto: CreateUserDto, operator: AuthUser) {
     const exists = await this.prisma.user.findUnique({ where: { username: dto.username } });
     if (exists) {
-      throw new BadRequestException(
+      throw duplicate(
         exists.deletedAt ? `用户名「${dto.username}」曾被已删除的账号使用，请换一个` : `用户名「${dto.username}」已存在`,
       );
     }

@@ -1,3 +1,19 @@
+/*
+ * 颜色约定：页面样式一律用 Element Plus 的 CSS 变量（var(--el-bg-color)、var(--el-text-color-secondary) 等），
+ * 不要写死 #fff / #909399 之类的颜色，否则深色模式下会出现一块亮色（切换逻辑见 utils/theme.ts）。
+ * Element Plus 没有的、项目自己的颜色定义在下面，并在 html.dark 里给出深色值。
+ */
+:root {
+  --sb-aside-bg: #001529; /* 侧栏底色（AdminLayout 的 el-menu 另按 isDark 取同样的值） */
+  --sb-glass-bg: rgba(255, 255, 255, 0.96); /* 登录 / 强制改密卡片（压在深色渐变背景上） */
+  --sb-brand-title: #12365f; /* 登录 / 强制改密页标题 */
+}
+html.dark {
+  --sb-aside-bg: #141414;
+  --sb-glass-bg: rgba(29, 30, 31, 0.94);
+  --sb-brand-title: #e5eaf3;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -9,10 +25,10 @@ body,
   margin: 0;
   padding: 0;
   font-family: "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #f5f7fa;
+  background: var(--el-bg-color-page);
 }
 .page-card {
-  background: #fff;
+  background: var(--el-bg-color);
   border-radius: 8px;
   padding: 16px;
 }
@@ -29,7 +45,7 @@ body,
 /* 弱化文字（提示/说明）与列表页分页条，多处复用，统一收口在这里 */
 .muted,
 .mini {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
   font-size: 12px;
 }
 .pager {
@@ -45,11 +61,19 @@ body,
   right: 0;
   height: 2px;
   z-index: 3000;
-  background: #409eff;
+  background: var(--el-color-primary);
   box-shadow: 0 0 6px rgba(64, 158, 255, 0.6);
   transform-origin: left;
   transform: scaleX(0);
   opacity: 0;
   transition: transform 0.2s ease, opacity 0.3s ease;
   pointer-events: none;
+}
+
+/* 表单项右侧的灰色说明文字 */
+.form-tip {
+  margin-left: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.4;
 }

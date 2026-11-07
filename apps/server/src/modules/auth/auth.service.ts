@@ -72,12 +72,11 @@ export class AuthService {
 
   // ---------- 登录 ----------
   async login(dto: LoginDto, req: Request) {
-    const key = LoginGuardService.keyOf(dto.username, req.ip);
-    this.guard.assertNotLocked(key); // 连续失败过多：直接拒绝（429）
+    await this.guard.assertNotLocked(dto.username, req.ip); // 连续失败过多：直接拒绝（429，业务码 42901）
 
     // 验证码：配置要求时必须校验（缺 id 时提示前端拉取验证码）
-    if (this.guard.captchaRequired(key)) {
-      const needCaptcha = !dto.captchaId || !this.guard.verifyCaptcha(dto.captchaId, dto.captchaCode || '');
+    if (await this.guard.captchaRequired(dto.username, req.ip)) {
+      const needCaptcha = !dto.captchaId || !(await this.guard.verifyCaptcha(dto.captchaId, dto.captchaCode || ''));
       if (needCaptcha) {
         throw new BusinessException(
           BizCode.NEED_CAPTCHA,
@@ -96,11 +95,11 @@ export class AuthService {
     // 日志里记录具体原因便于排障；对外响应统一模糊提示，防止用户名枚举
     const reason = ok ? '登录成功' : !user ? '账号不存在' : user.status !== 'ENABLED' ? '账号已禁用' : '密码错误';
     if (!ok) {
-      this.guard.recordFailure(key); // 失败计数（达到阈值则锁定）
+      await this.guard.recordFailure(dto.username, req.ip); // 失败计数（达到阈值则锁定）
       this.auditLogin(user?.id, dto.username, false, reason, req);
       throw new UnauthorizedException('用户名或密码错误');
     }
-    this.guard.clearFailures(key);
+    await this.guard.clearFailures(dto.username, req.ip);
     this.auditLogin(user.id, dto.username, true, '登录成功', req);
 
     const pair = await this.issueTokens(user.id, user.username, user.name, req);
@@ -215,10 +214,12 @@ export class AuthService {
     return this.profile(user);
   }
 
-  // ---------- 当前用户可见菜单（前端动态路由数据源） ----------
+  // ---------- 当前用户有权访问的菜单（前端动态路由 + 侧栏的数据源） ----------
+  // 不按 visible 过滤：visible=false 只表示「不在侧栏显示」（如详情页、编辑页），页面仍要注册成路由；
+  // 侧栏渲染时由前端按 visible 过滤。停用（status=DISABLED）的菜单既不显示也不注册路由
   async myMenus(user: AuthUser) {
     const menus = await this.prisma.menu.findMany({
-      where: { status: 'ENABLED', visible: true, type: { in: ['DIRECTORY', 'MENU'] } },
+      where: { status: 'ENABLED', type: { in: ['DIRECTORY', 'MENU'] } },
       orderBy: [{ sort: 'asc' }, { id: 'asc' }],
     });
     let visible = menus;

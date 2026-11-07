@@ -143,16 +143,16 @@ onMounted(load);
 
 <style scoped>
 .dropzone {
-  border: 1px dashed #d9d9d9;
+  border: 1px dashed var(--el-border-color);
   border-radius: 8px;
   padding: 18px;
   text-align: center;
-  color: #909399;
+  color: var(--el-text-color-secondary);
   cursor: pointer;
   margin-bottom: 12px;
   transition: all 0.2s;
 }
-.dropzone:hover { border-color: #409eff; color: #409eff; }
-.dropzone.over { background: #ecf5ff; border-color: #409eff; }
+.dropzone:hover { border-color: var(--el-color-primary); color: var(--el-color-primary); }
+.dropzone.over { background: var(--el-color-primary-light-9); border-color: var(--el-color-primary); }
 .file-icon { margin-right: 6px; }
 </style>

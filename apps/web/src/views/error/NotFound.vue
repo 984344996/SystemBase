@@ -18,9 +18,9 @@
 .code {
   font-size: 72px;
   font-weight: 800;
-  color: #409eff;
+  color: var(--el-color-primary);
 }
 .txt {
-  color: #8a97a8;
+  color: var(--el-text-color-secondary);
 }
 </style>

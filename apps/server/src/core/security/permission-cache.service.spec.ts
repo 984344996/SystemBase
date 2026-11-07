@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { RedisClientService } from '../redis/redis.module';
+import { localEventBus } from '../redis/testing';
 import { PermissionCacheService } from './permission-cache.service';
 import type { AuthUser } from './jwt.strategy';
 
@@ -13,7 +13,7 @@ const user = (id: number, permissions: string[] = []): AuthUser => ({
   pwdUpdatedAt: 0,
 });
 
-const create = (ttl = '30') => new PermissionCacheService(new ConfigService({ PERMISSION_CACHE_TTL: ttl }), new RedisClientService(new ConfigService({ LOCK_DRIVER: 'db' })));
+const create = (ttl = '30') => new PermissionCacheService(new ConfigService({ PERMISSION_CACHE_TTL: ttl }), localEventBus());
 
 describe('PermissionCacheService', () => {
   afterEach(() => jest.useRealTimers());

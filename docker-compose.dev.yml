@@ -1,0 +1,42 @@
+# 本地开发依赖：MySQL 8 + Redis 7（不想在本机安装数据库时用）
+#
+#   启动：docker compose -f docker-compose.dev.yml up -d
+#   停止：docker compose -f docker-compose.dev.yml down        （数据保留在 volume 里）
+#   清空：docker compose -f docker-compose.dev.yml down -v     （连同数据一起删除）
+#
+# 然后把 deploy/envs/local.env 改成：
+#   DATABASE_URL="mysql://root:root@127.0.0.1:3306/system_base"
+#   （要试多实例能力时再加）LOCK_DRIVER=redis  REDIS_URL="redis://127.0.0.1:6379"
+# 再执行 ./sb.sh local start（会自动建库、迁移、初始化数据）
+#
+# 端口与本机已有的 MySQL/Redis 冲突时，改左边的宿主机端口（如 "3307:3306"），并同步修改 DATABASE_URL
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: systembase-dev-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root          # 仅本地开发用，不要用于任何服务器
+      MYSQL_DATABASE: system_base
+      TZ: Asia/Shanghai
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: systembase-dev-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  mysql-data:
+  redis-data:

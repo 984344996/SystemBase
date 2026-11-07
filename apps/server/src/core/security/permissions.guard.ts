@@ -5,9 +5,10 @@ import { BizCode, BusinessException } from '../filter/business.exception';
 import { AuthUser } from './jwt.strategy';
 import { ALLOW_PENDING_PASSWORD_KEY, LOGIN_ONLY_KEY, PERMISSIONS_KEY } from './permissions.decorator';
 import { IS_PUBLIC_KEY } from './public.decorator';
+import { SUPER_ROLE } from '@sb/shared';
 
-/** 超级管理员角色编码（全仓库唯一定义处，其他地方引用此常量） */
-export const SUPER_ROLE = 'SUPER_ADMIN';
+/** 超级管理员角色编码定义在 @sb/shared（前后端共用一份），这里再导出一次保持原有引用路径 */
+export { SUPER_ROLE };
 
 export const isSuperAdmin = (user: Pick<AuthUser, 'roles'>) => user.roles.includes(SUPER_ROLE);
 

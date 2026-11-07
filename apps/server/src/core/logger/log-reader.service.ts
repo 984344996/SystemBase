@@ -4,7 +4,7 @@ import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { PageResult } from '@sb/shared';
-import { CLIENT_LOG_FILE_RE, clientLogFileName, formatLocalDate, LOG_DATE_RE, LOG_FILE_RE, logFileName } from './log-streams';
+import { clientLogFileName, formatLocalDate, LOG_DATE_RE, LOG_FILE_RE, logFileName } from './log-streams';
 
 /** 日志来源：server=后端 app.*.log / client=前端 web.*.log */
 export type LogSource = 'server' | 'client';

@@ -113,6 +113,8 @@ location ^~ $prefix/ {
     return 503 '<!doctype html><meta charset="utf-8"><title>系统维护中</title><h2 style="font-family:sans-serif;text-align:center;margin-top:20vh">系统维护中，请稍后再访问</h2>';
 }
 EOF
+  # 子路径部署：不带尾斜杠的入口同样跳到维护页（否则会落到共享域名站点自己的 location /）
+  [ -z "$prefix" ] || printf '\nlocation = %s {\n    return 301 %s/;\n}\n' "$prefix" "$prefix" >> "$SNIPPET"
 }
 
 # 恢复真实路由片段（stop 时备份的 .disabled）

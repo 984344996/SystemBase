@@ -152,3 +152,50 @@ describe('JobService.logs（读日志文件）', () => {
     expect(q.match({ jobId: 1, status: 'SUCCESS' })).toBe(false);
   });
 });
+
+describe('JobService：每次触发只执行一次 / 手动执行不阻塞请求', () => {
+  beforeAll(() => JOB_HANDLERS.set(KEY, class {}));
+  afterAll(() => JOB_HANDLERS.delete(KEY));
+
+  it('定时触发：本次触发已被其他实例认领 → 跳过（SKIPPED_DUP），不执行、不记 WARN', async () => {
+    const { service, lock, handler, logger } = setup({ handler: async () => 'x' });
+    lock.acquire.mockResolvedValueOnce(null); // 认领 job:fire:* 失败
+    const res = await service.run(1, 'cron', new Date('2026-01-01T00:00:00Z'));
+    expect(res).toMatchObject({ skipped: true, status: 'SKIPPED_DUP' });
+    expect(lock.acquire).toHaveBeenCalledWith(`job:fire:1:${Date.parse('2026-01-01T00:00:00Z')}`, expect.any(Number));
+    expect(handler.run).not.toHaveBeenCalled();
+    expect(logger.jobWarn).not.toHaveBeenCalled();
+  });
+
+  it('定时触发：认领成功后再抢执行锁并执行；认领记录不释放（防止时钟稍慢的实例重复执行）', async () => {
+    const claimRelease = jest.fn();
+    const { service, lock, handler, release } = setup({ handler: async () => 'ok' });
+    lock.acquire.mockResolvedValueOnce(claimRelease); // 认领
+    const res = await service.run(1, 'cron', new Date());
+    expect(res.status).toBe('SUCCESS');
+    expect(handler.run).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalled(); // 执行锁释放
+    expect(claimRelease).not.toHaveBeenCalled(); // 认领记录保留
+  });
+
+  it('手动执行：快任务直接返回结果', async () => {
+    const { service } = setup({ handler: async () => 'done' });
+    await expect(service.runOnce(1)).resolves.toMatchObject({ status: 'SUCCESS', result: 'done' });
+  });
+
+  it('手动执行：慢任务 5 秒后返回 RUNNING，任务继续在后台执行', async () => {
+    jest.useFakeTimers();
+    try {
+      let finish!: (v: string) => void;
+      const { service, logger } = setup({ handler: () => new Promise<string>((r) => (finish = r)), timeoutSec: 60 });
+      const pending = service.runOnce(1);
+      await jest.advanceTimersByTimeAsync(5_000);
+      await expect(pending).resolves.toEqual({ status: 'RUNNING' });
+      finish('later');
+      await jest.advanceTimersByTimeAsync(0);
+      expect(logger.job).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCESS', result: 'later' }), expect.any(String));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});

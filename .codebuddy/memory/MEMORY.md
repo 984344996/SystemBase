@@ -10,6 +10,15 @@
 - 改 core 层后必须跑 `pnpm --filter @sb/server test:e2e`（独立库 system_base_e2e）
 - 用户偏好：脚本里每个函数/小步骤都要有中文注释（用户看不懂无注释的脚本）
 
+## 框架约定（2026-11-07 新增）
+- 图标一律 `<MenuIcon name="X" />`，禁止 `import { X } from "@element-plus/icons-vue"`（会把全部图标拉回首屏主包）
+- 弹窗表单用 `useCrudForm`；字典用 `DictSelect`/`DictTag`；导出用 `utils/export.ts`；业务码用 `@sb/shared` 的 `BizCode` + `bizCodeOf(e)`
+- 「已存在」统一 `throw duplicate(...)`（409/40901）；跨实例共享状态用 `SharedStoreService` / `EventBusService` / `LockService`，不要自建 Redis 客户端
+- 前端颜色一律用 `var(--el-*)` 变量（支持深色模式），项目自定义色在 `styles/index.css` 的 `:root` 与 `html.dark` 成对定义
+- 新增环境变量必须写进 `core/config/env.validation.ts` 和 env 模板
+- 质量门：`pnpm lint`（tsc + prisma validate + ESLint）、`pnpm test`（后端 jest 覆盖率门 50% + 前端 vitest）
+- 依赖漏洞用根 package.json 的 `pnpm.overrides` 在同大版本内修复；新项目用 `./sb.sh init-project`，发版用 `scripts/bump-version.mjs`
+
 ## 部署约定（2026-11-06 更新）
 - 远程发布在服务器后台执行（setsid nohup），日志 `shared/deploy-logs/<版本号>.log`(.rc/.pid)，`./sb.sh <env> deploy-log` 查看
 - 新增部署段变量时必须同时加进 `deploy.sh` 的 `DEPLOY_KEYS` 与 `deploy.ps1` 的 `$deployKeys`（当前含 PROTECTED）

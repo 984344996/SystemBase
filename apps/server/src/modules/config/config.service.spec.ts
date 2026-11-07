@@ -1,6 +1,8 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from './config.service';
 import { PrismaService } from '../../core/prisma/prisma.service';
+import { localEventBus } from '../../core/redis/testing';
+import { BizCode } from '../../core/filter/business.exception';
 
 function setup() {
   const prisma: any = {
@@ -13,17 +15,15 @@ function setup() {
     },
   };
   const logger = { warn: jest.fn(), warnFields: jest.fn(), info: jest.fn(), audit: jest.fn() } as any;
-  const service = new ConfigService(prisma as unknown as PrismaService, logger);
+  const service = new ConfigService(prisma as unknown as PrismaService, logger, localEventBus());
   return { service, prisma, logger };
 }
 
 describe('ConfigService 写入', () => {
-  it('键重复 → 400', async () => {
+  it('键重复 → 409（业务码 40901）', async () => {
     const { service, prisma } = setup();
     prisma.sysConfig.findUnique.mockResolvedValue({ key: 'a' });
-    await expect(service.create({ key: 'a', value: '1', type: 'STRING', label: 'A' })).rejects.toBeInstanceOf(
-      BadRequestException,
-    );
+    await expect(service.create({ key: 'a', value: '1', type: 'STRING', label: 'A' })).rejects.toMatchObject({ response: { bizCode: BizCode.DUPLICATE } });
   });
 
   it('JSON 类型非法值 → 400；数值类型非法 → 400', async () => {

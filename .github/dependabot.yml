@@ -1,0 +1,20 @@
+# 依赖自动更新：每周检查一次，按「补丁/小版本」分组提 PR，CI 全绿后再合并。
+# 大版本升级（如 NestJS 10 → 11）单独提 PR，需要人工评估破坏性变更。
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [dependencies]

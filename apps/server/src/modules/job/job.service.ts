@@ -21,6 +21,12 @@ import { LockService } from '../../core/lock/lock.service';
 import { MetricsService } from '../../core/metrics/metrics.service';
 import { JOB_HANDLERS, JobHandler, JobContext } from './job-registry';
 import { CreateJobDto, QueryJobLogDto, UpdateJobDto } from './job.dto';
+import { duplicate } from '../../core/filter/business.exception';
+
+/** 手动执行时 HTTP 请求最多等待多久（超过则返回 RUNNING，任务在后台继续） */
+const MANUAL_WAIT_MS = 5_000;
+/** 「本次触发」认领记录的保留时长：只需大于各实例间的时钟偏差，过期后由 system.cleanup 清理 */
+const FIRE_CLAIM_TTL_MS = 10 * 60_000;
 
 @Injectable()
 export class JobService implements OnModuleInit, OnModuleDestroy {
@@ -132,7 +138,7 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
     }
     this.assertCron(dto.cronExpr);
     const exists = await this.prisma.job.findUnique({ where: { name: dto.name } });
-    if (exists) throw new BadRequestException(`任务名「${dto.name}」已存在`);
+    if (exists) throw duplicate(`任务名「${dto.name}」已存在`);
 
     // 并发竞态兜底：撞唯一约束(P2002)时转友好提示而非 500
     const job = await withUniqueViolation(
@@ -199,15 +205,30 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
     return { success: true };
   }
 
-  /** 手动立即执行一次（不等 cron） */
+  /**
+   * 手动立即执行一次（不等 cron）。
+   * 不把 HTTP 请求挂到任务结束（任务超时上限可达 1 小时）：最多等 MANUAL_WAIT_MS，
+   * 期间执行完就直接返回结果；没执行完返回 status=RUNNING，任务在后台继续，结果写入执行记录
+   */
   async runOnce(id: number) {
     const job = await this.prisma.job.findUnique({ where: { id } });
     if (!job) throw new NotFoundException('任务不存在');
     if (!JOB_HANDLERS.has(job.handlerKey)) {
       throw new BadRequestException(`处理器 ${job.handlerKey} 未注册`);
     }
-    const result = await this.run(id, 'manual');
-    return result;
+    const running = this.run(id, 'manual').catch((e) => {
+      this.logger.error(`任务 #${id} 手动执行异常: ${e.message}`);
+      return { skipped: false, status: 'FAILED', result: null, error: String(e?.message || e), costMs: 0 };
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const waited = new Promise<{ status: 'RUNNING' }>((resolve) => {
+      timer = setTimeout(() => resolve({ status: 'RUNNING' }), MANUAL_WAIT_MS);
+    });
+    try {
+      return await Promise.race([running, waited]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   // ---------- 调度核心 ----------
@@ -218,8 +239,10 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
   private async schedule(id: number, cronExpr: string) {
     // 先构造 CronJob（cron 库语法校验）再动现有调度：表达式不被支持时抛错，旧调度保持不变
     const job = new CronJob(cronExpr, () => {
+      // 本次触发对应的计划时间（各实例算出来的是同一个值，用于「每次触发只执行一次」）
+      const firedAt = this.scheduledFireTime(cronExpr);
       runWithTraceId(this.appLogger.newTraceId(), () => {
-        this.run(id, 'cron').catch((e) => this.logger.error(`任务 #${id} 调度执行异常: ${e.message}`));
+        this.run(id, 'cron', firedAt).catch((e) => this.logger.error(`任务 #${id} 调度执行异常: ${e.message}`));
       });
     });
     this.deschedule(id);
@@ -250,15 +273,28 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * 执行一次任务（cron 触发与手动触发共用）：
-   * 分布式锁防多实例并发 → 超时控制 → 执行记录写日志文件（event=run）。
+   * 每次触发只执行一次（多实例）→ 分布式锁防并发重入 → 超时控制 → 执行记录写日志文件（event=run）。
+   *
+   * @param firedAt 定时触发时本次的计划时间。多实例下每台都会在同一时刻触发：
+   *   只靠「执行锁」只能保证不并发——任务很快跑完释放锁后，时钟稍慢的实例还能再抢到锁执行一遍。
+   *   这里先按「任务 + 计划时间」认领本次触发（认领记录不释放，靠过期清理），没认领到的实例直接跳过
    */
-  async run(jobId: number, trigger: 'cron' | 'manual') {
+  async run(jobId: number, trigger: 'cron' | 'manual', firedAt?: Date) {
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });
     if (!job) return { skipped: true, reason: '任务不存在' };
     // 定时触发以库为准：任务已在其他实例上被暂停/改 cron，本实例的旧调度不应执行（对账前的窗口期兜底）
     if (trigger === 'cron' && job.status !== 'ENABLED') {
       this.deschedule(jobId);
       return { skipped: true, reason: '任务已暂停' };
+    }
+
+    // 认领本次触发：已被其他实例认领（它在执行或已执行完）→ 静默跳过，不算异常
+    if (firedAt) {
+      const claimed = await this.lock.acquire(`job:fire:${jobId}:${firedAt.getTime()}`, FIRE_CLAIM_TTL_MS);
+      if (!claimed) {
+        this.logger.debug(`任务 #${jobId} 本次触发（${firedAt.toISOString()}）已由其他实例处理，跳过`);
+        return { skipped: true, status: 'SKIPPED_DUP', reason: '本次触发已由其他实例处理' };
+      }
     }
 
     const base = { event: 'run', jobId, jobName: job.name, handlerKey: job.handlerKey, trigger, params: job.params };
@@ -339,6 +375,18 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
 
   private nextRunAt(cronExpr: string): Date {
     return cronParser.parseExpression(cronExpr).next().toDate();
+  }
+
+  /**
+   * 当前这次触发的计划时间：不晚于「现在 + 1 秒」的最近一个触发点。
+   * 加 1 秒容忍定时器略早触发；各实例时钟偏差小于触发间隔时算出的是同一个时间点
+   */
+  private scheduledFireTime(cronExpr: string): Date {
+    try {
+      return cronParser.parseExpression(cronExpr, { currentDate: new Date(Date.now() + 1000) }).prev().toDate();
+    } catch {
+      return new Date(Math.floor(Date.now() / 1000) * 1000);
+    }
   }
 
   /** 启动时错过触发窗口的处理 */
