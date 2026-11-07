@@ -14,10 +14,10 @@
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
     "@sb/shared": "workspace:*",
-    "axios": "^1.7.7",
-    "element-plus": "^2.8.4",
+    "axios": "^1.21.0",
+    "element-plus": "^2.14.7",
     "pinia": "^2.2.4",
-    "vue": "^3.5.12",
+    "vue": "^3.5.44",
     "vue-router": "^4.4.5"
   },
   "devDependencies": {
