@@ -26,10 +26,10 @@
 | `system:log:download` | ✓ | LogList.vue | ✓ |
 | `system:log:list` | ✓ | - | ✓ 菜单权限（随菜单控制页面可见） |
 | `system:loginlog:list` | ✓ | - | ✓ 菜单权限（随菜单控制页面可见） |
-| `system:menu:create` | ✓ | MenuList.vue(hasPerm) | ✓ |
-| `system:menu:delete` | ✓ | MenuList.vue(hasPerm) | ✓ |
+| `system:menu:create` | ✓ | MenuList.vue | ✓ |
+| `system:menu:delete` | ✓ | MenuList.vue | ✓ |
 | `system:menu:list` | ✓ | - | ✓ 菜单权限（随菜单控制页面可见） |
-| `system:menu:update` | ✓ | MenuList.vue(hasPerm) | ✓ |
+| `system:menu:update` | ✓ | MenuList.vue | ✓ |
 | `system:notice:create` | ✓ | NoticeList.vue | ✓ |
 | `system:notice:delete` | ✓ | NoticeList.vue | ✓ |
 | `system:notice:list` | ✓ | - | ✓ 菜单权限（随菜单控制页面可见） |

@@ -78,7 +78,7 @@
 #   ssh          登录服务器（交互式）
 #   gen-crud     生成 CRUD 模块骨架（本机操作，不碰服务器）
 #   init-project 新项目初始化：替换项目名/包作用域/库名，可删除示例模块（先预览，加 --yes 执行）
-#   setup-hooks  启用 .githooks/pre-commit（提交前自动跑 pnpm lint && pnpm test）
+#   setup-hooks  启用 .githooks/pre-commit（提交前自动跑 pnpm lint、pnpm test 与生成文档漂移检查）
 #
 # 提示：所有远程命令都不会改动数据库结构以外的业务数据，fresh / db-restore 是仅有的覆盖数据操作。
 #       Windows 下 SSH 只支持密钥免密登录（不支持 SSH_PASSWORD）。
@@ -132,7 +132,7 @@ switch ($Environment) {
     if (-not (Test-Path (Join-Path $root ".git"))) { Fail "当前目录不是 git 仓库" }
     & git config core.hooksPath .githooks
     Write-Host "✓ 已启用 pre-commit 钩子（.githooks/pre-commit）" -ForegroundColor Green
-    Write-Host "  提交前将执行: pnpm lint && pnpm test；临时跳过: `$env:SKIP_HOOKS='1'; git commit ..."
+    Write-Host "  提交前将执行: pnpm lint、pnpm test、生成文档漂移检查（pnpm docs:gen）；临时跳过: `$env:SKIP_HOOKS='1'; git commit ..."
   }
   "init-project" {
     # 非环境命令：新项目初始化（PowerShell 位置参数有限，建议直接 node scripts/init-project.mjs --name xxx ...）

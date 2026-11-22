@@ -28,7 +28,9 @@ export const dictApi = {
   list: (params: { keyword?: string }) => request.get<never, DictRow[]>("/dicts", { params }),
   create: (data: Partial<DictRow>) => request.post<never, DictRow>("/dicts", data),
   update: (id: number, data: Partial<DictRow>) => request.put<never, DictRow>(`/dicts/${id}`, data),
-  remove: (id: number) => request.delete<never, { success: boolean }>(`/dicts/${id}`),
+  /** force：字典下还有选项时确认一并删除（不传时后端返回 409 + data.itemCount） */
+  remove: (id: number, force = false) =>
+    request.delete<never, { success: boolean }>(`/dicts/${id}`, { params: force ? { force: "true" } : undefined }),
   items: (dictId: number) => request.get<never, DictItemRow[]>(`/dicts/${dictId}/items`),
   addItem: (dictId: number, data: Partial<DictItemRow>) =>
     request.post<never, DictItemRow>(`/dicts/${dictId}/items`, data),

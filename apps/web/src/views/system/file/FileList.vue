@@ -5,7 +5,7 @@
         <el-input v-model="query.keyword" placeholder="文件名" clearable style="width: 220px" @keyup.enter="search" />
         <el-button type="primary" @click="search">查询</el-button>
         <div class="spacer" />
-        <el-button v-permission="'system:file:upload'" type="primary" @click="triggerUpload">
+        <el-button v-permission="'system:file:upload'" type="primary" :loading="uploading" @click="triggerUpload">
           {{ uploading ? "上传中..." : "上传文件" }}
         </el-button>
         <input ref="inputRef" type="file" hidden @change="onPick" />
@@ -48,9 +48,9 @@
             >
               下载
             </el-button>
-            <el-popconfirm title="确认删除？" @confirm="onDelete(row)">
+            <el-popconfirm title="确认删除？" @confirm="runDelete(row.id, () => onDelete(row))">
               <template #reference>
-                <el-button v-permission="'system:file:delete'" link type="danger">删除</el-button>
+                <el-button v-permission="'system:file:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
               </template>
             </el-popconfirm>
           </template>
@@ -58,7 +58,7 @@
         <template #empty>暂无文件</template>
       </el-table>
 
-      <TablePager :query="query" :total="total" :load="load" />
+      <TablePager :query="query" :total="total" :load="load" :error="error" />
     </el-card>
   </div>
 </template>
@@ -71,9 +71,13 @@ import { usePagedList } from "@/composables/usePagedList";
 import { formatSize, formatTime } from "@/utils/datetime";
 import { saveBlob } from "@/utils/log";
 import { useAuthStore } from "@/stores/auth";
+import { useRowBusy } from "@/composables/useRowBusy";
+
+/** 行内删除：按钮 loading + 防重复点击 */
+const { busyId: deletingId, run: runDelete } = useRowBusy();
 
 const auth = useAuthStore();
-const { query, rows, total, loading, load, search } = usePagedList(
+const { query, rows, total, loading, error, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "" },
   (q) => fileApi.list({ ...q, keyword: q.keyword || undefined }),
 );
@@ -86,10 +90,13 @@ const maxMB = Number(import.meta.env.VITE_UPLOAD_MAX_MB || 10);
 
 function triggerUpload() {
   if (!canUpload.value) return ElMessage.warning("没有上传权限");
+  if (uploading.value) return;
   inputRef.value?.click();
 }
 
 async function upload(file: File) {
+  // 一次只传一个：拖拽区和按钮都会走到这里；并发时先完成的那次会提前清掉 uploading 状态
+  if (uploading.value) return ElMessage.warning("正在上传，请稍候");
   if (file.size > maxMB * 1024 * 1024) return ElMessage.warning(`文件不能超过 ${maxMB}MB`);
   uploading.value = true;
   try {

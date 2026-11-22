@@ -29,6 +29,11 @@ const USER_SELECT = {
   roles: { include: { role: { select: { id: true, code: true, name: true } } } },
 };
 
+/** 软删除后的用户名：原名 + #del<id>（列宽 80，输入最长 50，不会超长） */
+export function deletedUsername(username: string, id: number): string {
+  return `${username}#del${id}`;
+}
+
 @Injectable()
 export class UserService {
   constructor(
@@ -114,7 +119,9 @@ export class UserService {
     await this.privilege.assertCanManageUser(operator, id);
     await this.prisma.$transaction(async (tx) => {
       await this.assertNotLastSuperAdmin(tx, id, { disable: true });
-      await tx.user.update({ where: { id }, data: { deletedAt: new Date() } });
+      // 用户名改写为「原名#del<id>」释放原用户名：username 有唯一约束，原来删除后无法再建同名账号
+      //（员工离职再入职、复用工号）；审计日志里记录的仍是原用户名
+      await tx.user.update({ where: { id }, data: { deletedAt: new Date(), username: deletedUsername(user.username, id) } });
       await this.revokeAllRefreshTokens(tx, id);
     });
     this.permCache.invalidateUser(id); // 已删除用户的 accessToken 立即失效

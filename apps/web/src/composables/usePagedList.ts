@@ -27,6 +27,8 @@ export function usePagedList<Q extends { page: number; pageSize: number }, T>(
   const rows = ref([]) as Ref<T[]>;
   const total = ref(0);
   const loading = ref(false);
+  /** 最近一次加载失败的提示（成功后清空）：TablePager 据此显示「加载失败，重试」，避免把旧数据当成最新结果 */
+  const error = ref<string | null>(null);
 
   let seq = 0; // 请求序号：只有最新一次的响应才写入列表
   let controller: AbortController | null = null;
@@ -41,9 +43,11 @@ export function usePagedList<Q extends { page: number; pageSize: number }, T>(
       if (mySeq !== seq) return; // 已有更新的请求，丢弃旧结果
       rows.value = res.list;
       total.value = res.total;
+      error.value = null;
     } catch (e) {
       // 被取消的请求静默忽略；其他错误交给请求层提示后继续抛出
       if (mySeq !== seq || isAbort(e)) return;
+      error.value = "列表加载失败";
       throw e;
     } finally {
       if (mySeq === seq) loading.value = false;
@@ -72,7 +76,7 @@ export function usePagedList<Q extends { page: number; pageSize: number }, T>(
     /* 不在组件 setup 中调用（如单测）时忽略 */
   }
 
-  return { query, rows, total, loading, load, search, reset };
+  return { query, rows, total, loading, error, load, search, reset };
 }
 
 /** 是否为取消请求导致的错误（axios 的 CanceledError / 原生 AbortError） */

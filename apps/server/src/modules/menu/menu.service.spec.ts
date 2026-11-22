@@ -82,7 +82,7 @@ describe('MenuService.update', () => {
     const { service, prisma } = setup();
     // 1 的父设为 2；2 的父是 1 → 成环
     prisma.menu.findUnique.mockImplementation(({ where }: any) =>
-      Promise.resolve(where.id === 1 ? { id: 1, parentId: 2 } : { id: 2, parentId: 1 }),
+      Promise.resolve(where.id === 1 ? { id: 1, parentId: 2, type: 'DIRECTORY' } : { id: 2, parentId: 1, type: 'DIRECTORY' }),
     );
     await expect(service.update(1, { name: 'x', type: 'DIRECTORY', parentId: 2 } as any)).rejects.toBeInstanceOf(
       BadRequestException,
@@ -91,10 +91,56 @@ describe('MenuService.update', () => {
 
   it('更新成功：失效权限缓存', async () => {
     const { service, prisma, invalidateAll } = setup();
-    prisma.menu.findUnique.mockResolvedValue({ id: 1, parentId: null });
+    prisma.menu.findUnique.mockResolvedValue({ id: 1, parentId: null, type: 'DIRECTORY' });
     prisma.menu.update.mockResolvedValue({ id: 1 });
     await service.update(1, { name: '改名', type: 'DIRECTORY' } as any);
     expect(invalidateAll).toHaveBeenCalled();
+  });
+});
+
+describe('MenuService 层级规则与字段清理', () => {
+  it('按钮只能挂在页面下：顶级 / 目录下 → 400，页面下 → 成功', async () => {
+    const { service, prisma } = setup();
+    const btn = { name: '新增', type: 'BUTTON', permission: 'x:create', sort: 1 };
+    await expect(service.create({ ...btn, parentId: 0 } as any)).rejects.toThrow('按钮必须挂在页面菜单下');
+    prisma.menu.findUnique.mockResolvedValue({ type: 'DIRECTORY' });
+    await expect(service.create({ ...btn, parentId: 1 } as any)).rejects.toThrow('按钮必须挂在页面菜单下');
+    prisma.menu.findUnique.mockResolvedValue({ type: 'MENU' });
+    prisma.menu.create.mockResolvedValue({ id: 20 });
+    await expect(service.create({ ...btn, parentId: 2 } as any)).resolves.toEqual({ id: 20 });
+  });
+
+  it('修改时同样校验父级：挂到按钮下 / 不存在的节点下 → 400', async () => {
+    const { service, prisma } = setup();
+    const dto = { name: '页面', type: 'MENU', path: '/p', component: 'p/P', sort: 1 };
+    prisma.menu.findUnique.mockImplementation(({ where }: any) =>
+      Promise.resolve(where.id === 5 ? { id: 5, parentId: 0, type: 'MENU' } : where.id === 7 ? { id: 7, type: 'BUTTON' } : null),
+    );
+    await expect(service.update(5, { ...dto, parentId: 7 } as any)).rejects.toThrow('目录和页面只能挂在目录下');
+    await expect(service.update(5, { ...dto, parentId: 99 } as any)).rejects.toThrow('父级菜单不存在');
+    expect(prisma.menu.update).not.toHaveBeenCalled();
+  });
+
+  it('有子节点时不能修改类型', async () => {
+    const { service, prisma } = setup();
+    prisma.menu.findUnique.mockResolvedValue({ id: 5, parentId: 0, type: 'MENU' });
+    prisma.menu.count.mockResolvedValue(3);
+    await expect(service.update(5, { name: 'x', type: 'DIRECTORY', parentId: 0, sort: 1 } as any)).rejects.toThrow(
+      '存在子节点时不能修改类型',
+    );
+  });
+
+  it('按类型清掉隐藏字段：按钮不带路由/组件/图标，目录不带组件/权限码', async () => {
+    const { service, prisma } = setup();
+    prisma.menu.findUnique.mockResolvedValue({ type: 'MENU' });
+    await service.create({ name: '删', type: 'BUTTON', parentId: 2, permission: 'x:del', path: '/old', component: 'old/Old', icon: 'Edit', sort: 1 } as any);
+    expect(prisma.menu.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({ permission: 'x:del', path: null, component: null, icon: null }),
+    });
+    await service.create({ name: '目录', type: 'DIRECTORY', parentId: 0, path: '/d', component: 'x/X', permission: 'x:list', sort: 1 } as any);
+    expect(prisma.menu.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({ path: '/d', component: null, permission: null }),
+    });
   });
 });
 

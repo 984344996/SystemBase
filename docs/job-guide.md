@@ -55,9 +55,10 @@ export class DailyStatsJob implements JobHandler {
 |---|---|
 | 分布式锁 | 每次执行先抢 `job:run:{id}` 锁（Redis SET NX PX / DB 行锁），多实例部署同一任务同一时刻只有一个实例真正执行，抢不到记 `SKIPPED_LOCK` |
 | 超时强杀 | `timeoutSec`（默认 300s），Promise.race 超时记 `TIMEOUT` |
-| misfire 策略 | 服务重启错过触发窗口时：`SKIP` 跳过 / `RUN_ONCE` 补跑一次 |
+| misfire 策略 | 服务重启错过触发窗口时：`SKIP` 跳过 / `RUN_ONCE` 补跑一次（按错过的计划时间认领，多实例同时重启也只补跑一次） |
+| 优雅关闭 | 发布 / 重启时不再接受新触发，通过 `ctx.signal` 通知执行中的任务停止，最多等 `JOB_SHUTDOWN_WAIT_SECONDS`（默认 8s）；仍未结束的记 `ABORTED` 并释放执行锁（新进程可立即再跑） |
 | handler 失效 | 部署回滚导致处理器缺失：任务自动暂停并在列表标红"未注册" |
-| 执行记录 | 每次执行写一条 `category=job, event=run` 日志（SUCCESS→INFO / SKIPPED_LOCK→WARN / FAILED、TIMEOUT→ERROR），不落库 |
+| 执行记录 | 每次执行写一条 `category=job, event=run` 日志（SUCCESS→INFO / SKIPPED_LOCK→WARN / FAILED、TIMEOUT、ABORTED→ERROR），不落库；任务参数脱敏后记录 |
 
 ## 内置任务
 
@@ -71,3 +72,4 @@ export class DailyStatsJob implements JobHandler {
 - handler key 全局唯一，重复注册启动直接报错（快速暴露冲突）
 - `run()` 尽量幂等：补跑/misfire 场景可能重复执行
 - 重活（大报表、批处理）建议在 handler 内部再分页处理，并控制 timeoutSec 合理值
+- 耗时任务在循环里检查 `ctx.signal?.aborted`，为真时处理完当前这一批就返回：发布 / 重启时能干净地停下，不会被硬中断在半路

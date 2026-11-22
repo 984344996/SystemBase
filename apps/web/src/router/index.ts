@@ -1,9 +1,9 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
-import { isAxiosError } from "axios";
 import { ElMessageBox } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import { registerDynamicRoutes } from "@/stores/permission";
 import { doneProgress, startProgress } from "@/utils/progress";
+import { isSessionExpired } from "@/utils/request";
 
 declare module "vue-router" {
   interface RouteMeta {
@@ -62,8 +62,8 @@ router.beforeEach(async (to) => {
       auth.routesLoaded = true;
       return { ...to, replace: true }; // 重新进入以命中刚注册的路由
     } catch (e) {
-      // 只有会话确实失效（刷新后仍 401）才登出；后端重启/断网/5xx 时保留登录态，提示重试
-      if (isAxiosError(e) && e.response?.status === 401) {
+      // 只有会话确实失效（刷新后仍 401）才登出；后端重启/断网/5xx（含刷新 token 时）保留登录态，提示重试
+      if (isSessionExpired(e)) {
         await auth.logout();
         return { path: "/login" };
       }

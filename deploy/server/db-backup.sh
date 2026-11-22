@@ -10,7 +10,7 @@
 # - backup 成功后最后一行固定输出 "BACKUP_FILE=<路径>"，调用方据此取得文件路径（不要改格式）
 # - restore 流程：先备份当前库 → 停应用 → 清空库内全部表 → 导入 → 迁移到当前代码版本 → 启动应用
 #   （危险操作的二次确认由本机 deploy.sh 负责）
-# - 备份保留 KEEP_BACKUP_DAYS 天（默认 7），按文件修改时间清理
+# - 备份保留 KEEP_BACKUP_DAYS 天（默认 7，读 shared/.env；手动执行时可用同名环境变量临时覆盖），按文件修改时间清理
 # ============================================================
 if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
 set -euo pipefail
@@ -22,12 +22,15 @@ ARG="${4:-}"
 
 SHARED="$APP_DIR/shared"
 BACKUP_DIR="$SHARED/backup"
-KEEP_DAYS="${KEEP_BACKUP_DAYS:-7}"
 PM2_NAME="$APP_NAME-server"
 # env 解析器：优先用同目录（发布包内）的，单独上传到 /tmp 执行时用线上版本的
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ENV_TOOL="$HERE/env-tool.cjs"
 [ -f "$ENV_TOOL" ] || ENV_TOOL="$APP_DIR/current/deploy/server/env-tool.cjs"
+# 备份保留天数：进程环境变量优先，其次 shared/.env 的 KEEP_BACKUP_DAYS，默认 7
+#   （原来只读环境变量：每日定时任务和 ./sb.sh <环境> db-backup 都不会传，env 里配置了也不生效）
+KEEP_DAYS="${KEEP_BACKUP_DAYS:-$(node "$ENV_TOOL" get "$SHARED/.env" KEEP_BACKUP_DAYS 7 2>/dev/null || echo 7)}"
+[[ "$KEEP_DAYS" =~ ^[1-9][0-9]*$ ]] || KEEP_DAYS=7
 
 G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; N='\033[0m'
 die() { echo -e "${R}✗ $*${N}" >&2; exit 1; }   # 打印错误到 stderr 并退出
@@ -62,7 +65,10 @@ strip_gtid() { sed -E '/^SET @@(GLOBAL\.GTID_PURGED|SESSION\.SQL_LOG_BIN|SESSION
 # $1 = 备注（可空）。成功时最后一行输出 BACKUP_FILE=<路径>
 do_backup() {
   local note="$1" stamp name file
+  # 备份含全部业务数据与密码哈希：只允许属主读写（默认 umask 下是 644，同机其他用户可读）
+  umask 077
   mkdir -p "$BACKUP_DIR"
+  chmod 700 "$BACKUP_DIR"
   stamp="$(date +%Y%m%d%H%M%S)"
   name="${DB_NAME}_${stamp}"
   # 备注清洗：只保留字母数字、_-、中文（tr 会把中文逐字节替换成下划线，故用 node）
@@ -84,7 +90,9 @@ do_backup() {
 }
 
 # ---------- 恢复用到的辅助函数 ----------
-APP_STOPPED=0   # 恢复期间是否停过应用（失败时据此重新启动）
+APP_STOPPED=0      # 恢复期间是否停过应用（失败时据此重新启动）
+RESTORE_PHASE=""   # 恢复进行到哪一步：importing = 已清表、正在导入（此时失败库里是空的或只导入了一半）
+SAFETY_FILE=""     # 恢复前自动备份的文件路径（导入失败时用它自动回退）
 
 # 让非交互 SSH 也能找到 npm 全局安装的 pm2
 ensure_pm2_path() {
@@ -141,11 +149,34 @@ migrate_to_code() {
   fi
 }
 
-# 恢复失败时兜底：重新启动被停掉的应用，提示用自动备份回退
+# 导入一个备份文件到当前库（.sql 或 .sql.gz；剔除 GTID 语句）
+import_file() {
+  if [ "${1%.gz}" != "$1" ]; then
+    gunzip < "$1" | strip_gtid | mysql $(mysql_args) "$DB_NAME"
+  else
+    strip_gtid < "$1" | mysql $(mysql_args) "$DB_NAME"
+  fi
+}
+
+# 恢复失败时兜底：
+#   - 导入阶段失败（已清表）：自动用恢复前的备份回退，回退成功才重新启动应用；
+#     回退也失败则保持停止（原来会直接启动，应用在空库 / 半库上运行）
+#   - 其他阶段失败：重新启动被停掉的应用
 on_restore_exit() {
   local code=$?
-  if [ "$code" -ne 0 ] && [ "$APP_STOPPED" = 1 ]; then
-    echo -e "${R}!! 恢复失败，重新启动应用；数据库可能不完整，可用 auto-before-restore 备份再次恢复${N}"
+  [ "$code" -ne 0 ] || return 0
+  if [ "$RESTORE_PHASE" = importing ] && [ -n "$SAFETY_FILE" ] && [ -f "$SAFETY_FILE" ]; then
+    echo -e "${R}!! 导入失败，正在用恢复前的自动备份回退: $SAFETY_FILE${N}"
+    if drop_all_tables && import_file "$SAFETY_FILE"; then
+      echo -e "${Y}  已回退到恢复前的数据${N}"
+    else
+      echo -e "${R}!! 自动回退也失败：应用保持停止（避免在空库 / 半库上运行）${N}"
+      echo -e "${R}   排查后手动导入 $SAFETY_FILE，再执行 ./sb.sh <环境> start${N}"
+      return 0
+    fi
+  fi
+  if [ "$APP_STOPPED" = 1 ]; then
+    echo -e "${Y}重新启动应用${N}"
     pm2 start "$PM2_NAME" >/dev/null 2>&1 || true
   fi
 }
@@ -159,18 +190,19 @@ do_restore() {
   case "$file" in *.sql.gz|*.sql) ;; *) die "备份文件需为 .sql 或 .sql.gz" ;; esac
 
   echo -e "${Y}恢复前先备份当前库（auto-before-restore）...${N}"
-  do_backup "auto-before-restore" | sed '/^BACKUP_FILE=/d'
+  local out
+  out="$(do_backup "auto-before-restore")"   # 备份失败（die）会直接中止，库不动
+  printf '%s\n' "$out" | sed '/^BACKUP_FILE=/d'
+  SAFETY_FILE="$(printf '%s\n' "$out" | sed -n 's/^BACKUP_FILE=//p' | tail -n 1)"
 
   trap on_restore_exit EXIT
   stop_app
+  RESTORE_PHASE=importing
   echo -e "${Y}清空库 ${DB_NAME} 内全部表${N}"
   drop_all_tables
   echo -e "${Y}正在导入 $file → ${DB_NAME}${N}"
-  if [ "${file%.gz}" != "$file" ]; then
-    gunzip < "$file" | strip_gtid | mysql $(mysql_args) "$DB_NAME"
-  else
-    strip_gtid < "$file" | mysql $(mysql_args) "$DB_NAME"
-  fi
+  import_file "$file"
+  RESTORE_PHASE=imported
   migrate_to_code || rc=1
   start_app
   [ "$rc" = 0 ] || exit 1

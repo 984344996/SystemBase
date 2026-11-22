@@ -90,6 +90,15 @@ export function bizCodeOf(e: unknown): number | undefined {
   return (e as { bizCode?: number } | null)?.bizCode;
 }
 
+/**
+ * 是否「会话确实失效」：401 且不是因为刷新 token 时网络异常 / 服务端 5xx。
+ * 路由守卫据此决定登出还是提示重试
+ */
+export function isSessionExpired(e: unknown): boolean {
+  const err = e as { response?: { status?: number }; authRefresh?: string } | null;
+  return err?.response?.status === 401 && err.authRefresh !== "network";
+}
+
 /** 取接口错误附带的数据（后端 BusinessException 的 data，如 { needCaptcha: true }） */
 export function bizDataOf<T = unknown>(e: unknown): T | undefined {
   return (e as { bizData?: T } | null)?.bizData;
@@ -220,7 +229,9 @@ service.interceptors.response.use(
       }
       if (result.reason === "expired") kickToLogin();
       else notify("error", "网络异常，登录状态校验失败，请稍后重试");
-      return Promise.reject(error);
+      // 标记失败原因：调用方（如路由守卫）用 isSessionExpired(e) 区分「会话失效」和「刷新时网络异常」，
+      // 后者不能登出（否则后端短暂不可用时刷新页面就被踢回登录页）
+      return Promise.reject(Object.assign(error, { authRefresh: result.reason }));
     }
 
     // 登录接口 401（用户名或密码错误）由登录页自行提示

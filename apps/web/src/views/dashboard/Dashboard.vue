@@ -1,21 +1,21 @@
 <template>
   <div class="dashboard">
     <el-row :gutter="16">
-      <el-col :span="8">
+      <el-col :xs="24" :sm="12" :md="8">
         <div class="stat-card">
           <div class="stat-label">欢迎回来</div>
           <div class="stat-value">{{ auth.user?.name }}</div>
           <div class="stat-sub">{{ auth.user?.roles?.join(" · ") }}</div>
         </div>
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :sm="12" :md="8">
         <div class="stat-card">
           <div class="stat-label">角色权限</div>
           <div class="stat-value">{{ auth.user?.permissions?.length ?? 0 }}</div>
           <div class="stat-sub">个权限点</div>
         </div>
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :sm="12" :md="8">
         <div class="stat-card">
           <div class="stat-label">服务状态</div>
           <div class="stat-value" :style="{ color: healthy ? 'var(--el-color-success)' : 'var(--el-color-danger)' }">
@@ -59,6 +59,10 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+/* 窄屏时卡片竖排，补上行间距 */
+.dashboard :deep(.el-row) {
+  row-gap: 16px;
+}
 .stat-card {
   background: var(--el-bg-color);
   border-radius: 8px;

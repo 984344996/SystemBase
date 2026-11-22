@@ -33,7 +33,7 @@
       <el-input v-model="query.keyword" placeholder="关键字（原文包含）" clearable style="width: 200px" @keyup.enter="search" />
       <el-button type="primary" @click="search">查询</el-button>
       <div class="spacer" />
-      <el-button v-permission="'system:log:download'" :disabled="!query.date" @click="download">下载当日日志</el-button>
+      <el-button v-permission="'system:log:download'" :disabled="!query.date" :loading="downloading" @click="download">下载当日日志</el-button>
     </div>
 
     <el-alert
@@ -81,7 +81,7 @@
     <TablePager
       :query="query"
       :total="Math.min(total, 5000)"
-      :load="load"
+      :load="load" :error="error"
       :page-sizes="[20, 50, 100]"
     />
   </div>
@@ -98,7 +98,7 @@ import { LOG_CATEGORY_OPTIONS, LOG_LEVEL_OPTIONS, entryDetail, levelTagType, sav
 const files = ref<{ date: string; size: number }[]>([]);
 /** 命中过多时后端只保留最新一部分，页面上提示 */
 const truncated = ref(false);
-const { query, rows, total, loading, load, search } = usePagedList(
+const { query, rows, total, loading, error, load, search } = usePagedList(
   {
     date: today(),
     source: "server" as "server" | "client",
@@ -140,16 +140,29 @@ function filterTrace(traceId: string) {
   search();
 }
 
+/** 下载：大文件可能要几十秒（超时 120s），期间按钮 loading，防止重复下载 */
+const downloading = ref(false);
 async function download() {
-  const blob = await monitorApi.download(query.date, query.source);
-  const prefix = query.source === "client" ? "web" : "app";
-  saveBlob(blob, `${prefix}.${query.date}.log`);
-  ElMessage.success("已开始下载");
+  if (downloading.value) return;
+  downloading.value = true;
+  try {
+    const blob = await monitorApi.download(query.date, query.source);
+    const prefix = query.source === "client" ? "web" : "app";
+    saveBlob(blob, `${prefix}.${query.date}.log`);
+    ElMessage.success("已开始下载");
+  } finally {
+    downloading.value = false;
+  }
 }
 
 onMounted(async () => {
-  files.value = await monitorApi.dates();
-  if (files.value.length && !files.value.some((f) => f.date === query.date)) query.date = files.value[0].date;
+  // 日期列表加载失败也要继续加载当天日志（原来这里报错后列表永远是空的）
+  try {
+    files.value = await monitorApi.dates();
+    if (files.value.length && !files.value.some((f) => f.date === query.date)) query.date = files.value[0].date;
+  } catch {
+    /* 错误提示已由请求层弹出 */
+  }
   load();
 });
 </script>

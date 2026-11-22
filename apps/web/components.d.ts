@@ -55,6 +55,7 @@ declare module 'vue' {
     ElTableColumn: typeof import('element-plus/es')['ElTableColumn']
     ElTag: typeof import('element-plus/es')['ElTag']
     ElTree: typeof import('element-plus/es')['ElTree']
+    ElTreeSelect: typeof import('element-plus/es')['ElTreeSelect']
     IconPicker: typeof import('./src/components/IconPicker.vue')['default']
     MenuIcon: typeof import('./src/components/MenuIcon.vue')['default']
     PageErrorBoundary: typeof import('./src/components/PageErrorBoundary.vue')['default']

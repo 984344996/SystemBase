@@ -160,6 +160,11 @@ describe('UserService.remove', () => {
     await expect(service.remove(5, SUPER)).resolves.toEqual({ success: true });
     expect(prisma.refreshToken.updateMany).toHaveBeenCalled();
     expect(invalidateUser).toHaveBeenCalledWith(5);
+    // 用户名改写为「原名#del<id>」，原用户名可以再次使用
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 5 },
+      data: { deletedAt: expect.any(Date), username: `${user.username}#del5` },
+    });
   });
 
   it('不能删除自己', async () => {

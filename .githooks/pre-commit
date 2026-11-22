@@ -25,7 +25,8 @@ pnpm test --silent
 
 echo "==> pre-commit: 生成文档是否最新（pnpm docs:gen）"
 pnpm --silent docs:gen >/dev/null
-if ! git diff --quiet -- docs/generated; then
+# 未暂存的改动（git diff 比对工作区与暂存区：已 git add 的不算），或新生成了未跟踪的文件
+if ! git diff --quiet -- docs/generated || [ -n "$(git ls-files --others --exclude-standard -- docs/generated)" ]; then
   echo "!! docs/generated 与源码不一致：已重新生成，请检查后 git add docs/generated 再提交"
   git diff --stat -- docs/generated
   exit 1

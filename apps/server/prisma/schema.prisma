@@ -11,7 +11,8 @@ datasource db {
 
 model User {
   id        Int       @id @default(autoincrement())
-  username  String    @unique @db.VarChar(50)
+  /// 输入最长 50；软删除时改写为「原名#del<id>」释放原用户名（可重建同名账号），故列宽 80
+  username  String    @unique @db.VarChar(80)
   password  String    @db.VarChar(100)
   name      String    @db.VarChar(50)
   phone     String?   @db.VarChar(20)
@@ -30,6 +31,8 @@ model User {
 
   roles         UserRole[]
   refreshTokens RefreshToken[]
+
+  @@index([deletedAt, status, createdAt]) // 用户列表：未删除 + 状态筛选 + 按创建时间排序
 }
 
 model Role {
@@ -91,6 +94,10 @@ model RefreshToken {
   id        Int       @id @default(autoincrement())
   userId    Int
   tokenHash String    @unique @db.VarChar(128)
+  /// 登录会话 ID：一次登录产生，轮换时沿用；accessToken 的 sid 声明与之对应（登出即吊销整个会话）
+  sessionId String    @db.VarChar(32)
+  /// 会话开始（登录）时间：轮换不重置，用于绝对过期上限 JWT_REFRESH_ABSOLUTE_MAX
+  sessionStartedAt DateTime @default(now())
   expiresAt DateTime
   revokedAt DateTime?
   ip        String?   @db.VarChar(50)
@@ -100,6 +107,7 @@ model RefreshToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([sessionId])
   @@index([expiresAt]) // system.cleanup 每小时按过期时间清理
   @@index([revokedAt])
 }
@@ -183,7 +191,7 @@ model File {
   deletedAt  DateTime? // 软删除（清理任务可定期物理删除）
 
   @@index([uploaderId])
-  @@index([deletedAt])
+  @@index([deletedAt, createdAt]) // 文件列表：未删除 + 按创建时间倒序（也覆盖只按 deletedAt 的清理查询）
   @@map("file")
 }
 

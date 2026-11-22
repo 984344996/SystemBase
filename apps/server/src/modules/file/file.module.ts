@@ -12,6 +12,8 @@ import { FileService, uploadMaxSize } from './file.service';
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
         storage: memoryStorage(),
+        // 文件名按 UTF-8 解析：multer 2.x 默认 latin1，中文文件名入库、列表、下载时都会乱码
+        defParamCharset: 'utf8',
         limits: { fileSize: uploadMaxSize(config), files: 1, fields: 10 },
       }),
     }),

@@ -31,6 +31,7 @@
           <span>字典项{{ current ? `（${current.name}）` : "" }}</span>
           <div>
             <el-button v-permission="'system:dict:update'" link type="primary" :disabled="!current" @click="openEditDict">编辑字典</el-button>
+            <el-button v-permission="'system:dict:delete'" link type="danger" :disabled="!current" :loading="deletingDict" @click="removeDict">删除字典</el-button>
             <el-button v-permission="'system:dict:update'" type="primary" :disabled="!current" @click="openCreateItem">新增选项</el-button>
           </div>
         </div>
@@ -49,9 +50,9 @@
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
             <el-button v-permission="'system:dict:update'" link type="primary" @click="openEditItem(row)">编辑</el-button>
-            <el-popconfirm title="确认删除该选项？" @confirm="removeItem(row)">
+            <el-popconfirm title="确认删除该选项？" @confirm="runDelete(row.id, () => removeItem(row))">
               <template #reference>
-                <el-button v-permission="'system:dict:delete'" link type="danger">删除</el-button>
+                <el-button v-permission="'system:dict:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
               </template>
             </el-popconfirm>
           </template>
@@ -62,16 +63,16 @@
 
     <!-- 字典类型表单 -->
     <el-dialog v-model="dictDialog" :title="dictForm.id ? '编辑字典' : '新增字典'" width="480px">
-      <el-form :model="dictForm" label-width="90px">
-        <el-form-item label="字典编码"><el-input v-model="dictForm.code" :disabled="!!dictForm.id" placeholder="如 user_status" /></el-form-item>
-        <el-form-item label="名称"><el-input v-model="dictForm.name" /></el-form-item>
+      <el-form ref="dictFormRef" :model="dictForm" :rules="dictRules" label-width="90px">
+        <el-form-item label="字典编码" prop="code"><el-input v-model="dictForm.code" :disabled="!!dictForm.id" placeholder="如 user_status" maxlength="50" /></el-form-item>
+        <el-form-item label="名称" prop="name"><el-input v-model="dictForm.name" maxlength="50" /></el-form-item>
         <el-form-item label="状态">
           <el-radio-group v-model="dictForm.status">
             <el-radio value="ENABLED">启用</el-radio>
             <el-radio value="DISABLED">停用</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="备注"><el-input v-model="dictForm.remark" type="textarea" /></el-form-item>
+        <el-form-item label="备注" prop="remark"><el-input v-model="dictForm.remark" type="textarea" maxlength="255" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dictDialog = false">取消</el-button>
@@ -81,9 +82,9 @@
 
     <!-- 字典项表单 -->
     <el-dialog v-model="itemDialog" :title="itemForm.id ? '编辑选项' : '新增选项'" width="480px">
-      <el-form :model="itemForm" label-width="90px">
-        <el-form-item label="展示文案"><el-input v-model="itemForm.label" /></el-form-item>
-        <el-form-item label="存储值"><el-input v-model="itemForm.value" /></el-form-item>
+      <el-form ref="itemFormRef" :model="itemForm" :rules="itemRules" label-width="90px">
+        <el-form-item label="展示文案" prop="label"><el-input v-model="itemForm.label" maxlength="100" /></el-form-item>
+        <el-form-item label="存储值" prop="value"><el-input v-model="itemForm.value" maxlength="100" /></el-form-item>
         <el-form-item label="排序"><el-input-number v-model="itemForm.sort" :min="0" /></el-form-item>
         <el-form-item label="状态">
           <el-radio-group v-model="itemForm.status">
@@ -91,7 +92,7 @@
             <el-radio value="DISABLED">停用</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="备注"><el-input v-model="itemForm.remark" /></el-form-item>
+        <el-form-item label="备注" prop="remark"><el-input v-model="itemForm.remark" maxlength="255" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="itemDialog = false">取消</el-button>
@@ -103,9 +104,15 @@
 
 <script setup lang="ts">
 import { useDictStore } from "@/stores/dict";
-import { onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { nextTick, onMounted, reactive, ref } from "vue";
+import { ElMessage, type FormInstance, type FormRules } from "element-plus";
+import { R, clearValidate, validateForm } from "@/utils/formRules";
+import { confirmAction } from "@/utils/confirm";
 import { dictApi, type DictItemRow, type DictRow } from "@/api/dict";
+import { useRowBusy } from "@/composables/useRowBusy";
+
+/** 行内删除：按钮 loading + 防重复点击 */
+const { busyId: deletingId, run: runDelete } = useRowBusy();
 
 const dicts = ref<DictRow[]>([]);
 const items = ref<DictItemRow[]>([]);
@@ -144,6 +151,7 @@ async function selectDict(d: DictRow) {
 function openCreateDict() {
   Object.assign(dictForm, { id: undefined, code: "", name: "", status: "ENABLED", remark: "" });
   dictDialog.value = true;
+  nextTick(() => clearValidate(dictFormRef));
 }
 
 function openEditDict() {
@@ -151,9 +159,25 @@ function openEditDict() {
   const { id, code, name, status, remark } = current.value;
   Object.assign(dictForm, { id, code, name, status, remark: remark ?? "" });
   dictDialog.value = true;
+  nextTick(() => clearValidate(dictFormRef));
 }
 
+// ---------- 表单校验（与后端 dict.dto 一致） ----------
+const dictFormRef = ref<FormInstance>();
+const itemFormRef = ref<FormInstance>();
+const dictRules: FormRules = {
+  code: [R.required("字典编码"), R.max(50)],
+  name: [R.required("名称"), R.max(50)],
+  remark: [R.max(255)],
+};
+const itemRules: FormRules = {
+  label: [R.required("展示文案"), R.max(100)],
+  value: [R.required("存储值"), R.max(100)],
+  remark: [R.max(255)],
+};
+
 async function submitDict() {
+  if (saving.value || !(await validateForm(dictFormRef))) return;
   saving.value = true;
   try {
     // 只提交 DTO 白名单字段（整行带上 id/_count 会被后端 forbidNonWhitelisted 拒绝；编码创建后不可改）
@@ -173,16 +197,18 @@ function openCreateItem() {
   if (!current.value) return;
   Object.assign(itemForm, { id: undefined, label: "", value: "", sort: items.value.length + 1, status: "ENABLED", remark: "" });
   itemDialog.value = true;
+  nextTick(() => clearValidate(itemFormRef));
 }
 
 function openEditItem(row: DictItemRow) {
   const { id, label, value, sort, status, remark } = row;
   Object.assign(itemForm, { id, label, value, sort, status, remark: remark ?? "" });
   itemDialog.value = true;
+  nextTick(() => clearValidate(itemFormRef));
 }
 
 async function submitItem() {
-  if (!current.value) return;
+  if (!current.value || saving.value || !(await validateForm(itemFormRef))) return;
   saving.value = true;
   try {
     const { id, label, value, sort, status, remark } = itemForm;
@@ -195,6 +221,28 @@ async function submitItem() {
     selectDict(current.value);
   } finally {
     saving.value = false;
+  }
+}
+
+/** 删除字典：确认框里写明会一并删除多少个选项（后端在未确认时同样会拒绝） */
+const deletingDict = ref(false);
+async function removeDict() {
+  const d = current.value;
+  if (!d) return;
+  const count = d._count?.items ?? 0;
+  const tip = count
+    ? `字典「${d.name}」下有 ${count} 个选项，将一并删除。业务数据里引用这些值的地方将无法显示文案，确认删除？`
+    : `确认删除字典「${d.name}」？`;
+  if (!(await confirmAction(tip, { title: "删除字典", confirmText: "删除" }))) return;
+  deletingDict.value = true;
+  try {
+    await dictApi.remove(d.id, count > 0);
+    dictStore.invalidate(d.code);
+    ElMessage.success("已删除");
+    current.value = null;
+    await loadDicts();
+  } finally {
+    deletingDict.value = false;
   }
 }
 

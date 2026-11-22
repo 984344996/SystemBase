@@ -51,10 +51,17 @@ reload_pm2() {
 }
 
 # 轮询健康检查，最长 60 秒；通过返回 0
+# 健康检查：60 秒内 /api/health 返回 200
+#   $1 = 期望版本号（可空）：返回体带 release 字段时必须等于它，确认跑的是切换后的新进程
+#        （老版本不返回 release 字段时只看状态码）
 wait_health() {
-  local _
+  local want="${1:-}" body _
   for _ in $(seq 1 60); do
-    curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$(port)/api/health" && return 0
+    if body="$(curl -sf --max-time 2 "http://127.0.0.1:$(port)/api/health" 2>/dev/null)"; then
+      if [ -z "$want" ] || ! grep -q '"release":' <<< "$body" || grep -q "\"release\":\"$want\"" <<< "$body"; then
+        return 0
+      fi
+    fi
     sleep 1
   done
   return 1
@@ -218,7 +225,9 @@ case "$CMD" in
     [ "$target" != "$cur" ] || { echo "已经是 $target"; exit 0; }
     echo -e "${Y}回滚: $cur → $target（数据库迁移不会回退；如新版本做过破坏性变更，请先确认兼容）${N}"
     # 2) 配置：目标版本有配置快照则恢复（当前配置留底 .env.prev）；老版本没有快照时沿用当前配置
+    env_swapped=0
     if [ -f "$APP_DIR/releases/$target/.env.snapshot" ]; then
+      env_swapped=1
       cp -p "$SHARED/.env" "$SHARED/.env.prev"
       cp -p "$APP_DIR/releases/$target/.env.snapshot" "$SHARED/.env" && chmod 600 "$SHARED/.env"
       echo "  已恢复 $target 发布时的配置（原配置留底 shared/.env.prev）"
@@ -230,13 +239,26 @@ case "$CMD" in
     reload_pm2
     # 4) Nginx 路由按目标版本的配置重新生成（两个版本 SITE_PATH 不同时必须）
     refresh_nginx "$APP_DIR/releases/$target" || echo -e "  ${Y}Nginx 配置重新生成失败，沿用现有配置（可登录服务器 nginx -t 排查）${N}"
-    # 5) 健康检查
-    if wait_health; then
+    # 5) 健康检查（要求返回的版本号就是目标版本）
+    if wait_health "$target"; then
       echo "$target $(date '+%F %T') rollback OK" >> "$APP_DIR/releases.log"
       echo -e "${G}✓ 已回滚到 $target，健康检查通过${N}"
     else
       echo "$target $(date '+%F %T') rollback FAILED" >> "$APP_DIR/releases.log"
-      echo -e "${R}!! 回滚后健康检查未通过，请执行 ./sb.sh <环境> logs pm2 排查${N}"; exit 1
+      echo -e "${R}!! 回滚到 $target 后健康检查未通过，切回原版本 $cur${N}"
+      # 6) 目标版本起不来：切回原版本（代码 + 配置 + Nginx），不要停在坏版本上
+      if [ -n "$cur" ] && [ -d "$APP_DIR/releases/$cur" ]; then
+        [ "$env_swapped" = 1 ] && [ -f "$SHARED/.env.prev" ] && cp -p "$SHARED/.env.prev" "$SHARED/.env"
+        ln -sfn "$APP_DIR/releases/$cur" "$APP_DIR/current.tmp" && mv -Tf "$APP_DIR/current.tmp" "$APP_DIR/current"
+        reload_pm2
+        refresh_nginx "$APP_DIR/releases/$cur" || true
+        if wait_health "$cur"; then
+          echo -e "${Y}  已切回原版本 $cur，线上恢复正常。目标版本 $target 的启动错误: ./sb.sh <环境> logs pm2${N}"
+        else
+          echo -e "${R}  !! 切回原版本 $cur 后仍未通过健康检查，请立即执行 ./sb.sh <环境> logs pm2 排查${N}"
+        fi
+      fi
+      exit 1
     fi
     ;;
 

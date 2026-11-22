@@ -22,6 +22,7 @@ import { MetricsService } from '../../core/metrics/metrics.service';
 import { JOB_HANDLERS, JobHandler, JobContext } from './job-registry';
 import { CreateJobDto, QueryJobLogDto, UpdateJobDto } from './job.dto';
 import { duplicate } from '../../core/filter/business.exception';
+import { redact } from '../../core/operate-log/operate-log.interceptor';
 
 /** 手动执行时 HTTP 请求最多等待多久（超过则返回 RUNNING，任务在后台继续） */
 const MANUAL_WAIT_MS = 5_000;
@@ -76,8 +77,41 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
     this.startReconcile();
   }
 
-  onModuleDestroy() {
+  // ---------- 优雅关闭：发布 / 重启时不硬中断正在执行的任务 ----------
+  private shuttingDown = false;
+  /** 正在执行的任务：done 在执行记录写完后 resolve */
+  private readonly inFlight = new Map<symbol, { jobName: string; base: Record<string, unknown>; startedAt: Date; release: () => Promise<void>; done: Promise<void>; abort: AbortController }>();
+
+  /**
+   * 应用关闭（PM2 重启 / 发布切换，enableShutdownHooks 触发）：
+   *   1. 不再接受新的触发（注销全部 cron，run() 直接跳过）
+   *   2. 通知正在执行的任务停止（ctx.signal），最多等 JOB_SHUTDOWN_WAIT_SECONDS 秒（默认 8，需小于 PM2 kill_timeout 10s）
+   *   3. 仍未结束的：补写 ABORTED 执行记录并释放执行锁（进程即将退出，任务必然中断；
+   *      不释放的话锁要等 timeoutSec+60 秒才过期，新进程这段时间内都会跳过该任务）
+   */
+  async onModuleDestroy() {
     clearInterval(this.reconcileTimer);
+    this.shuttingDown = true;
+    for (const id of [...this.scheduledCron.keys()]) this.deschedule(id);
+    if (!this.inFlight.size) return;
+    const waitSec = Number(this.config.get<string>('JOB_SHUTDOWN_WAIT_SECONDS') ?? 8);
+    this.logger.log(`应用关闭：等待 ${this.inFlight.size} 个执行中的任务结束（最多 ${waitSec}s）`);
+    for (const f of this.inFlight.values()) f.abort.abort();
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.inFlight.values()].map((f) => f.done)),
+      new Promise((r) => (timer = setTimeout(r, Math.max(0, waitSec) * 1000))),
+    ]);
+    clearTimeout(timer);
+    for (const f of this.inFlight.values()) {
+      const costMs = Date.now() - f.startedAt.getTime();
+      this.appLogger.jobError(
+        { ...f.base, status: 'ABORTED', startedAt: formatLocalTime(f.startedAt), costMs, error: '应用关闭时任务仍未结束，已中断' },
+        `任务被中断(应用关闭): ${f.jobName}`,
+      );
+      await f.release().catch(() => undefined);
+    }
+    this.inFlight.clear();
   }
 
   /**
@@ -280,6 +314,7 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
    *   这里先按「任务 + 计划时间」认领本次触发（认领记录不释放，靠过期清理），没认领到的实例直接跳过
    */
   async run(jobId: number, trigger: 'cron' | 'manual', firedAt?: Date) {
+    if (this.shuttingDown) return { skipped: true, status: 'SKIPPED_SHUTDOWN', reason: '应用正在关闭' };
     const job = await this.prisma.job.findUnique({ where: { id: jobId } });
     if (!job) return { skipped: true, reason: '任务不存在' };
     // 定时触发以库为准：任务已在其他实例上被暂停/改 cron，本实例的旧调度不应执行（对账前的窗口期兜底）
@@ -297,7 +332,8 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const base = { event: 'run', jobId, jobName: job.name, handlerKey: job.handlerKey, trigger, params: job.params };
+    // 任务参数脱敏后再写日志（参数里可能放 webhook token / 密钥，每次执行都会记一遍）
+    const base = { event: 'run', jobId, jobName: job.name, handlerKey: job.handlerKey, trigger, params: redact(job.params) };
     const release = await this.lock.acquire(`job:run:${jobId}`, (job.timeoutSec + 60) * 1000);
     if (!release) {
       this.appLogger.jobWarn({ ...base, status: 'SKIPPED_LOCK', costMs: 0 }, `任务跳过(锁被占用): ${job.name}`);
@@ -311,6 +347,12 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
     let error: string | null = null;
     let timedOut = false;
 
+    // 登记为执行中（关闭时据此等待 / 补记 ABORTED）
+    const key = Symbol(job.name);
+    let markDone: () => void = () => undefined;
+    const abort = new AbortController();
+    this.inFlight.set(key, { jobName: job.name, base, startedAt, release, abort, done: new Promise<void>((r) => (markDone = r)) });
+
     try {
       const handler = this.resolveHandler(job.handlerKey);
       const ctx: JobContext = {
@@ -318,6 +360,7 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
         jobName: job.name,
         logger: this.appLogger,
         params: job.params,
+        signal: abort.signal,
       };
       const timeoutMs = (job.timeoutSec ?? 300) * 1000;
       /**
@@ -348,19 +391,25 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
     }
 
     const costMs = Date.now() - startMs;
-    await this.prisma.job.update({
-      where: { id: job.id },
-      data: {
-        prevRunAt: startedAt,
-        ...(job.status === 'ENABLED' ? { nextRunAt: this.nextRunAt(job.cronExpr) } : {}),
-      },
-    });
+    try {
+      // updateMany：任务在执行期间被删除时不抛 P2025（update 会抛错，导致下面的执行记录和指标都丢失）
+      await this.prisma.job.updateMany({
+        where: { id: job.id },
+        data: {
+          prevRunAt: startedAt,
+          ...(job.status === 'ENABLED' ? { nextRunAt: this.nextRunAt(job.cronExpr) } : {}),
+        },
+      });
 
-    const fields = { ...base, status, startedAt: formatLocalTime(startedAt), costMs, result, error };
-    if (status === 'SUCCESS') this.appLogger.job(fields, `任务执行成功: ${job.name}`);
-    else this.appLogger.jobError(fields, `任务执行${status === 'TIMEOUT' ? '超时' : '失败'}: ${job.name}`);
-    // 指标：/api/metrics 的 sb_job_runs_total
-    this.metrics?.incJob(job.handlerKey, status === 'SUCCESS');
+      const fields = { ...base, status, startedAt: formatLocalTime(startedAt), costMs, result, error };
+      if (status === 'SUCCESS') this.appLogger.job(fields, `任务执行成功: ${job.name}`);
+      else this.appLogger.jobError(fields, `任务执行${status === 'TIMEOUT' ? '超时' : '失败'}: ${job.name}`);
+      // 指标：/api/metrics 的 sb_job_runs_total
+      this.metrics?.incJob(job.handlerKey, status === 'SUCCESS');
+    } finally {
+      this.inFlight.delete(key);
+      markDone();
+    }
     return { skipped: false, status, result, error, costMs };
   }
 
@@ -396,7 +445,9 @@ export class JobService implements OnModuleInit, OnModuleDestroy {
     if (job.nextRunAt >= now) return;
     if (job.misfirePolicy === 'RUN_ONCE') {
       this.logger.log(`任务「${job.name}」错过触发窗口，按 RUN_ONCE 策略补跑一次`);
-      await this.run(job.id, 'cron');
+      // 用错过的计划时间作为「本次触发」认领：多个实例同时重启时都会读到同一个 nextRunAt，
+      // 只有一个能认领成功（原来不传，执行锁只防并发、不防重复，前一个跑完后一个还会再跑一遍）
+      await this.run(job.id, 'cron', job.nextRunAt);
     } else {
       await this.prisma.job.update({ where: { id: job.id }, data: { nextRunAt: this.nextRunAt(job.cronExpr) } });
     }

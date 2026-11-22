@@ -2,7 +2,8 @@ import { UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtStrategy } from './jwt.strategy';
 import { PermissionCacheService } from './permission-cache.service';
-import { localEventBus } from '../redis/testing';
+import { localEventBus, localStore } from '../redis/testing';
+import { SessionRevocationService } from './session-revocation.service';
 
 /** 数据库里的用户（含启用的角色与菜单权限） */
 function dbUser(overrides: Record<string, unknown> = {}) {
@@ -26,8 +27,9 @@ function setup(ttl = '30') {
   const cache = new PermissionCacheService({ get: () => ttl } as unknown as ConfigService, localEventBus());
   // 直接给定密钥（不用 ConfigService：它优先读 process.env，而导入 Prisma 时会加载本机 .env）
   const config = { get: () => 'x'.repeat(32) } as unknown as ConfigService;
-  const strategy = new JwtStrategy(config, prisma as any, cache);
-  return { strategy, prisma, cache };
+  const revocation = new SessionRevocationService({ get: () => '2h' } as unknown as ConfigService, localStore());
+  const strategy = new JwtStrategy(config, prisma as any, cache, revocation);
+  return { strategy, prisma, cache, revocation };
 }
 
 const iatAfterPwdChange = Date.parse('2026-02-01T00:00:00Z') / 1000;
@@ -79,5 +81,21 @@ describe('JwtStrategy.validate', () => {
     const { strategy, prisma } = setup();
     prisma.user.findFirst.mockResolvedValue(row);
     await expect(strategy.validate({ sub: 7, username: 'alice', name: 'Alice' })).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('会话已登出 → 401；其他会话不受影响', async () => {
+    const { strategy, revocation } = setup();
+    await revocation.revokeSession('s1');
+    const p = { sub: 7, username: 'alice', name: 'Alice', iat: Math.floor(Date.now() / 1000) };
+    await expect(strategy.validate({ ...p, sid: 's1' })).rejects.toThrow('已退出登录');
+    await expect(strategy.validate({ ...p, sid: 's2' })).resolves.toBeTruthy();
+  });
+
+  it('用户被整体吊销（检测到 token 泄露）：此前签发的 token → 401，之后签发的放行', async () => {
+    const { strategy, revocation } = setup();
+    const now = Math.floor(Date.now() / 1000);
+    await revocation.revokeUser(7);
+    await expect(strategy.validate({ sub: 7, username: 'alice', name: 'Alice', iat: now - 60 })).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(strategy.validate({ sub: 7, username: 'alice', name: 'Alice', iat: now + 5 })).resolves.toBeTruthy();
   });
 });

@@ -23,7 +23,8 @@
         </el-form-item>
         <el-button type="primary" class="login-btn" :loading="loading" @click="submit">登 录</el-button>
       </el-form>
-      <div class="login-tip">默认账号 admin / admin123</div>
+      <!-- 默认账号提示与预填只在本地开发显示：生产环境展示出来等于帮人撞库 -->
+      <div v-if="isDev" class="login-tip">默认账号 admin / admin123</div>
     </div>
   </div>
 </template>
@@ -44,7 +45,8 @@ const route = useRoute();
 const loading = ref(false);
 const captcha = ref<Captcha | null>(null);
 const captchaSrc = computed(() => (captcha.value ? `data:image/svg+xml;utf8,${encodeURIComponent(captcha.value.svg)}` : ""));
-const form = reactive({ username: "admin", password: "", captchaCode: "" });
+const isDev = import.meta.env.DEV;
+const form = reactive({ username: isDev ? "admin" : "", password: "", captchaCode: "" });
 
 /** 拉取验证码：服务端未启用（或依赖缺失）时返回 null，此时不显示验证码输入 */
 async function loadCaptcha() {
@@ -58,6 +60,8 @@ async function loadCaptcha() {
 onMounted(loadCaptcha);
 
 async function submit() {
+  // 防重入：表单按回车也会调用这里，按钮上的 :loading 拦不住（重复请求会多消耗失败次数 / 验证码）
+  if (loading.value) return;
   if (!form.username || !form.password) return ElMessage.warning("请输入用户名和密码");
   if (captcha.value && !form.captchaCode) return ElMessage.warning("请输入验证码");
   loading.value = true;
@@ -98,7 +102,7 @@ async function submit() {
   background: linear-gradient(135deg, #0a1929 0%, #12365f 55%, #1b5a8f 100%);
 }
 .login-card {
-  width: 380px;
+  width: min(380px, calc(100vw - 32px)); /* 窄屏（手机）时随屏幕缩小 */
   background: var(--sb-glass-bg);
   border-radius: 12px;
   padding: 40px 36px 28px;
@@ -139,6 +143,7 @@ async function submit() {
   border-radius: 4px;
   overflow: hidden;
   cursor: pointer;
+  /* 有意固定浅色：验证码图片是深色字，深色模式下换成深底会看不清 */
   background: #f5f7fa;
 }
 .captcha-img :deep(svg) {

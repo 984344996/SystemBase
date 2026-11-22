@@ -21,24 +21,24 @@
       <el-table-column prop="remark" label="备注" />
       <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
-          <el-button v-permission="'system:role:update'" link type="primary" @click="openEdit(row)">编辑权限</el-button>
-          <el-popconfirm title="确定删除该角色吗？" @confirm="remove(row)">
+          <el-button v-permission="'system:role:update'" link type="primary" :loading="openingId === row.id" @click="openEdit(row)">编辑权限</el-button>
+          <el-popconfirm title="确定删除该角色吗？" @confirm="runDelete(row.id, () => remove(row))">
             <template #reference>
-              <el-button v-permission="'system:role:delete'" link type="danger">删除</el-button>
+              <el-button v-permission="'system:role:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>
 
-    <TablePager :query="query" :total="total" :load="load" />
+    <TablePager :query="query" :total="total" :load="load" :error="error" />
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑角色' : '新增角色'" width="520px">
-      <el-form label-width="80px">
-        <el-form-item label="角色编码" v-if="!editingId">
-          <el-input v-model="form.code" placeholder="如 OPERATOR" />
+      <el-form ref="formRef" :model="form" :rules="formRules" label-width="80px">
+        <el-form-item v-if="!editingId" label="角色编码" prop="code">
+          <el-input v-model="form.code" placeholder="如 OPERATOR" maxlength="50" />
         </el-form-item>
-        <el-form-item label="角色名称"><el-input v-model="form.name" /></el-form-item>
+        <el-form-item label="角色名称" prop="name"><el-input v-model="form.name" maxlength="50" /></el-form-item>
         <el-form-item label="状态" v-if="editingId">
           <el-radio-group v-model="form.status">
             <el-radio value="ENABLED">启用</el-radio>
@@ -62,7 +62,7 @@
             @check="onTreeCheck"
           />
         </el-form-item>
-        <el-form-item label="备注"><el-input v-model="form.remark" /></el-form-item>
+        <el-form-item label="备注" prop="remark"><el-input v-model="form.remark" maxlength="255" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -75,12 +75,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
-import type { ElTree } from "element-plus";
+import type { ElTree, FormInstance, FormRules } from "element-plus";
+import { R, clearValidate, validateForm } from "@/utils/formRules";
 import { roleApi, type RoleRow } from "@/api/system";
 import type { MenuNode } from "@/api/auth";
 import { usePagedList } from "@/composables/usePagedList";
+import { useRowBusy } from "@/composables/useRowBusy";
 
-const { query, rows, total, loading, load, search } = usePagedList(
+/** 行内删除：按钮 loading + 防重复点击 */
+const { busyId: deletingId, run: runDelete } = useRowBusy();
+
+const { query, rows, total, loading, error, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "" },
   (q) => roleApi.list({ ...q, keyword: q.keyword || undefined }),
 );
@@ -136,23 +141,41 @@ async function openCreate() {
   editingId.value = null;
   await ensureMenuTree();
   dialogVisible.value = true;
+  nextTick(() => clearValidate(formRef));
   await nextTick();
   menuTreeRef.value?.setCheckedKeys([]);
 }
 
+/** 打开编辑：要先拉角色详情与菜单树，期间按钮 loading；连点时只处理第一次（并发会互相覆盖勾选） */
+const openingId = ref<number>();
 async function openEdit(row: RoleRow) {
-  const detail = await roleApi.detail(row.id);
-  Object.assign(form, { code: row.code, name: row.name, status: row.status, remark: row.remark || "" });
-  editingId.value = row.id;
-  await ensureMenuTree();
-  dialogVisible.value = true;
-  await nextTick();
-  // setCheckedKeys 是整体替换：不会残留上一个角色的勾选（弹窗不销毁，追加式 setChecked 会多授权）
-  menuTreeRef.value?.setCheckedKeys(detail.menuIds || []);
+  if (openingId.value) return;
+  openingId.value = row.id;
+  try {
+    const detail = await roleApi.detail(row.id);
+    Object.assign(form, { code: row.code, name: row.name, status: row.status, remark: row.remark || "" });
+    editingId.value = row.id;
+    await ensureMenuTree();
+    dialogVisible.value = true;
+    nextTick(() => clearValidate(formRef));
+    await nextTick();
+    // setCheckedKeys 是整体替换：不会残留上一个角色的勾选（弹窗不销毁，追加式 setChecked 会多授权）
+    menuTreeRef.value?.setCheckedKeys(detail.menuIds || []);
+  } finally {
+    openingId.value = undefined;
+  }
 }
 
+// ---------- 表单校验（与后端 CreateRoleDto / UpdateRoleDto 一致） ----------
+const formRef = ref<FormInstance>();
+const formRules: FormRules = {
+  code: [R.required("角色编码"), R.max(50)],
+  name: [R.required("角色名称"), R.max(50)],
+  remark: [R.max(255)],
+};
+
 async function submit() {
-  if (!editingId.value && (!form.code || !form.name)) return ElMessage.warning("请填写角色编码与名称");
+  if (saving.value || !(await validateForm(formRef))) return;
   const menuIds = (menuTreeRef.value?.getCheckedKeys() as number[]) ?? [];
   saving.value = true;
   try {

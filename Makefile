@@ -9,7 +9,7 @@ dev:                ## 本地一键启动（同 ./sb.sh local start：建 .env �
 build:              ## 构建全部包
 	pnpm build
 
-test:               ## 运行后端单测
+test:               ## 运行前后端单测（pnpm test）
 	pnpm test
 
 lint:               ## 全包类型检查 + schema 校验

@@ -22,9 +22,15 @@ export const EXT_MIME: Record<string, string> = {
 
 /** UPLOAD_ALLOWED_MIME=* 时仍然拒绝的高危扩展名（可执行 / 可在浏览器里运行脚本） */
 export const RISKY_EXT = [
-  '.exe', '.dll', '.bat', '.cmd', '.com', '.msi', '.sh', '.ps1', '.vbs',
-  '.php', '.phtml', '.jsp', '.asp', '.aspx', '.cgi', '.py', '.pl', '.rb',
-  '.js', '.mjs', '.cjs', '.html', '.htm', '.xhtml', '.svg', '.xml',
+  // Windows / 类 Unix 可执行与脚本
+  '.exe', '.dll', '.bat', '.cmd', '.com', '.msi', '.scr', '.pif', '.lnk', '.hta', '.cpl',
+  '.sh', '.bash', '.ps1', '.psm1', '.vbs', '.vbe', '.wsf', '.wsh', '.reg', '.jar', '.apk',
+  // 服务端脚本（被同步到其他 Web 服务的静态目录时可能被执行）
+  '.php', '.php3', '.php4', '.php5', '.phar', '.phtml', '.jsp', '.jspx', '.asp', '.aspx', '.ashx', '.cgi',
+  '.py', '.pl', '.rb',
+  // 浏览器里能执行脚本的文档
+  '.js', '.mjs', '.cjs', '.html', '.htm', '.xhtml', '.xht', '.shtml', '.mht', '.mhtml',
+  '.svg', '.svgz', '.xml', '.xsl', '.swf',
 ];
 
 const TEXT_MIME = new Set(['text/plain', 'text/csv', 'text/markdown']);

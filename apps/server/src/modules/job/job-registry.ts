@@ -8,6 +8,11 @@ export interface JobContext {
   logger: AppLogger;
   /** 任务的 params 字段(创建任务时配置的 JSON) */
   params: unknown;
+  /**
+   * 应用正在关闭（发布 / 重启）时触发 abort：耗时较长的任务应在循环里检查 signal.aborted，
+   * 尽快在一个安全点停下（如处理完当前这一批就返回），否则等待超时后进程退出、任务被硬中断
+   */
+  signal?: AbortSignal;
 }
 
 /** 任务处理器接口：实现 run 并返回执行结果摘要 */

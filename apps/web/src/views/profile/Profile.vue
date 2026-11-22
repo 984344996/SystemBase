@@ -38,10 +38,12 @@ onMounted(() => {
 
 async function save() {
   if (!form.name.trim()) return ElMessage.warning("姓名不能为空");
+  if (form.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return ElMessage.warning("邮箱格式不正确");
   if (saving.value) return;
   saving.value = true;
   try {
-    await authApi.updateProfile({ name: form.name.trim(), phone: form.phone, email: form.email });
+    // 手机号 / 邮箱留空表示清空（后端把空串存为 null）
+    await authApi.updateProfile({ name: form.name.trim(), phone: form.phone.trim(), email: form.email.trim() });
     await auth.loadUserContext(); // 顶部栏显示的是缓存的用户信息，改完重新拉取
     ElMessage.success("资料已更新");
   } finally {

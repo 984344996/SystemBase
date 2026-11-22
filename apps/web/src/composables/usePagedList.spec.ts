@@ -71,4 +71,13 @@ describe("usePagedList", () => {
     await expect(failing.load()).rejects.toThrow("500");
     expect(failing.loading.value).toBe(false);
   });
+
+  it("error：加载失败时记录提示（分页条显示「重试」），下次成功后清空", async () => {
+    const fetcher = vi.fn().mockRejectedValueOnce(new Error("500")).mockResolvedValueOnce(page(["a"]));
+    const list = usePagedList({ page: 1, pageSize: 10 }, fetcher);
+    await expect(list.load()).rejects.toThrow("500");
+    expect(list.error.value).toBe("列表加载失败");
+    await list.load();
+    expect(list.error.value).toBeNull();
+  });
 });

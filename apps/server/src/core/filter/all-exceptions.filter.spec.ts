@@ -1,6 +1,6 @@
 import { BadRequestException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { AllExceptionsFilter } from './all-exceptions.filter';
+import { AllExceptionsFilter, duplicateMessage } from './all-exceptions.filter';
 import { BizCode, BusinessException, duplicate } from './business.exception';
 
 /** 构造最小的 ArgumentsHost，捕获写出的状态码与响应体 */
@@ -69,5 +69,17 @@ describe('AllExceptionsFilter', () => {
     } finally {
       process.env.NODE_ENV = old;
     }
+  });
+});
+
+describe('duplicateMessage（唯一冲突提示不暴露索引名）', () => {
+  it.each([
+    ['User_username_key', '数据已存在（用户名重复）'],
+    [['code'], '数据已存在（编码重复）'],
+    ['DictItem_dictId_value_key', '数据已存在（值重复）'],
+    ['RefreshToken_tokenHash_key', '数据已存在'], // 不认识的字段：不返回字段 / 索引名
+    [undefined, '数据已存在'],
+  ])('%p → %s', (target, msg) => {
+    expect(duplicateMessage(target as any)).toBe(msg);
   });
 });

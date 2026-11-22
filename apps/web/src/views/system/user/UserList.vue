@@ -30,29 +30,29 @@
         <template #default="{ row }">
           <el-button v-permission="'system:user:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-button v-permission="'system:user:resetPwd'" link type="warning" @click="resetPwd(row)">重置密码</el-button>
-          <el-popconfirm title="确定删除该用户吗？" @confirm="remove(row)">
+          <el-popconfirm title="确定删除该用户吗？" @confirm="runDelete(row.id, () => remove(row))">
             <template #reference>
-              <el-button v-permission="'system:user:delete'" link type="danger">删除</el-button>
+              <el-button v-permission="'system:user:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
       </el-table-column>
     </el-table>
 
-    <TablePager :query="query" :total="total" :load="load" />
+    <TablePager :query="query" :total="total" :load="load" :error="error" />
 
     <!-- 新增/编辑 -->
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑用户' : '新增用户'" width="480px">
-      <el-form label-width="80px">
-        <el-form-item label="用户名" v-if="!editingId">
-          <el-input v-model="form.username" placeholder="登录用户名" />
+      <el-form ref="formRef" :model="form" :rules="formRules" label-width="80px">
+        <el-form-item v-if="!editingId" label="用户名" prop="username">
+          <el-input v-model="form.username" placeholder="登录用户名" maxlength="50" />
         </el-form-item>
-        <el-form-item label="密码" v-if="!editingId">
+        <el-form-item v-if="!editingId" label="密码" prop="password">
           <el-input v-model="form.password" type="password" show-password :placeholder="PASSWORD_HINT" />
         </el-form-item>
-        <el-form-item label="姓名"><el-input v-model="form.name" /></el-form-item>
-        <el-form-item label="手机号"><el-input v-model="form.phone" /></el-form-item>
-        <el-form-item label="邮箱"><el-input v-model="form.email" /></el-form-item>
+        <el-form-item label="姓名" prop="name"><el-input v-model="form.name" maxlength="50" /></el-form-item>
+        <el-form-item label="手机号" prop="phone"><el-input v-model="form.phone" maxlength="20" /></el-form-item>
+        <el-form-item label="邮箱" prop="email"><el-input v-model="form.email" maxlength="100" /></el-form-item>
         <el-form-item label="角色">
           <el-select v-model="form.roleIds" multiple style="width: 100%" placeholder="选择角色">
             <el-option v-for="r in allRoles" :key="r.id" :label="r.name" :value="r.id" />
@@ -64,7 +64,7 @@
             <el-radio value="DISABLED">禁用</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="备注"><el-input v-model="form.remark" /></el-form-item>
+        <el-form-item label="备注" prop="remark"><el-input v-model="form.remark" maxlength="255" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -75,15 +75,20 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { ElMessage, ElMessageBox } from "element-plus";
+import { nextTick, onMounted, reactive, ref } from "vue";
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from "element-plus";
 import { userApi, roleApi, type UserRow } from "@/api/system";
 import { usePagedList } from "@/composables/usePagedList";
 import { formatTime, today } from "@/utils/datetime";
 import { exportPaged } from "@/utils/export";
 import { PASSWORD_HINT, passwordProblem } from "@/utils/password";
+import { R, clearValidate, validateForm } from "@/utils/formRules";
+import { useRowBusy } from "@/composables/useRowBusy";
 
-const { query, rows, total, loading, load, search } = usePagedList(
+/** 行内删除：按钮 loading + 防重复点击 */
+const { busyId: deletingId, run: runDelete } = useRowBusy();
+
+const { query, rows, total, loading, error, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "", status: "" },
   (q) => userApi.list(q),
 );
@@ -116,17 +121,35 @@ const dialogVisible = ref(false);
 const saving = ref(false);
 const editingId = ref<number | null>(null);
 const allRoles = ref<{ id: number; code: string; name: string }[]>([]);
+/**
+ * 角色下拉选项：打开新增/编辑弹窗时才加载（只加载一次）。
+ * 不能放在页面加载时先 await：/roles/all 需要新增/编辑用户或角色列表权限，只有查看权限的用户会 403，
+ * 原来会导致后面的用户列表永远不加载
+ */
+let rolesLoaded = false;
+async function ensureRoles() {
+  if (rolesLoaded) return;
+  try {
+    allRoles.value = await roleApi.all();
+    rolesLoaded = true;
+  } catch {
+    /* 无权限或网络错误：下拉为空，错误提示已由请求层弹出 */
+  }
+}
 
 const emptyForm = { username: "", password: "", name: "", phone: "", email: "", remark: "", status: "ENABLED", roleIds: [] as number[] };
 const form = reactive({ ...emptyForm, roleIds: [] as number[] });
 
 function openCreate() {
+  ensureRoles();
   Object.assign(form, { ...emptyForm, roleIds: [] });
   editingId.value = null;
   dialogVisible.value = true;
+  nextTick(() => clearValidate(formRef));
 }
 
 function openEdit(row: UserRow) {
+  ensureRoles();
   Object.assign(form, {
     username: row.username,
     password: "",
@@ -139,15 +162,23 @@ function openEdit(row: UserRow) {
   });
   editingId.value = row.id;
   dialogVisible.value = true;
+  nextTick(() => clearValidate(formRef));
 }
 
+// ---------- 表单校验（与后端 CreateUserDto / UpdateUserDto 一致） ----------
+const formRef = ref<FormInstance>();
+const formRules: FormRules = {
+  username: [R.required("用户名"), R.max(50)],
+  password: [R.required("密码"), R.check((v) => passwordProblem(String(v ?? ""), form.username))],
+  name: [R.required("姓名"), R.max(50)],
+  phone: [R.phone],
+  email: [R.email, R.max(100)],
+  remark: [R.max(255)],
+};
+
 async function submit() {
+  if (saving.value || !(await validateForm(formRef))) return;
   const { username, password, ...profile } = form;
-  if (!editingId.value) {
-    if (!username || !profile.name) return ElMessage.warning("请填写用户名与姓名");
-    const problem = passwordProblem(password, username);
-    if (problem) return ElMessage.warning(problem);
-  }
   saving.value = true;
   try {
     // 编辑时不提交 username/password（UpdateUserDto 白名单不含这两个字段，会被后端拒绝）
@@ -179,8 +210,5 @@ async function resetPwd(row: UserRow) {
   ElMessage.success("密码已重置，该用户下次登录需修改密码");
 }
 
-onMounted(async () => {
-  allRoles.value = await roleApi.all();
-  load();
-});
+onMounted(load);
 </script>

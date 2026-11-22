@@ -3,7 +3,7 @@
     <div class="toolbar">
       <span class="muted">菜单与权限点：目录 → 页面 → 按钮三级，权限码需与后端 @RequirePermissions 一致</span>
       <div class="spacer" />
-      <el-button v-if="auth.hasPerm('system:menu:create')" type="primary" plain @click="openCreate(0)">新增顶级</el-button>
+      <el-button v-permission="'system:menu:create'" type="primary" plain @click="openCreate()">新增顶级</el-button>
     </div>
 
     <el-table v-loading="loading" :data="tree" row-key="id" border default-expand-all>
@@ -22,11 +22,14 @@
       </el-table-column>
       <el-table-column label="操作" width="220" fixed="right">
         <template #default="{ row }">
-          <el-button v-if="auth.hasPerm('system:menu:create') && row.type === 'DIRECTORY'" link type="primary" @click="openCreate(row.id)">加子项</el-button>
-          <el-button v-if="auth.hasPerm('system:menu:update')" link type="primary" @click="openEdit(row)">编辑</el-button>
+          <!-- 目录下可加目录/页面，页面下加按钮权限点；按钮没有子项 -->
+          <el-button v-if="row.type !== 'BUTTON'" v-permission="'system:menu:create'" link type="primary" @click="openCreate(row)">
+            {{ row.type === "MENU" ? "加按钮" : "加子项" }}
+          </el-button>
+          <el-button v-permission="'system:menu:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
           <el-popconfirm title="确定删除该菜单吗？" @confirm="remove(row)">
             <template #reference>
-              <el-button v-if="auth.hasPerm('system:menu:delete')" link type="danger">删除</el-button>
+              <el-button v-permission="'system:menu:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
@@ -34,7 +37,7 @@
     </el-table>
 
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑菜单' : '新增菜单'" width="520px">
-      <el-form label-width="90px">
+      <el-form ref="formRef" :model="form" :rules="formRules" label-width="90px">
         <el-form-item label="类型">
           <el-radio-group v-model="form.type">
             <el-radio value="DIRECTORY">目录</el-radio>
@@ -42,10 +45,23 @@
             <el-radio value="BUTTON">按钮</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
-        <el-form-item label="路由路径" v-if="form.type !== 'BUTTON'"><el-input v-model="form.path" placeholder="/system/user" /></el-form-item>
-        <el-form-item label="组件路径" v-if="form.type === 'MENU'"><el-input v-model="form.component" placeholder="system/user/UserList" /></el-form-item>
-        <el-form-item label="权限码" v-if="form.type !== 'DIRECTORY'"><el-input v-model="form.permission" placeholder="system:user:list" /></el-form-item>
+        <el-form-item label="上级">
+          <el-tree-select
+            v-model="form.parentId"
+            :data="parentOptions"
+            :props="{ label: 'name', children: 'children', disabled: parentDisabled }"
+            node-key="id"
+            check-strictly
+            default-expand-all
+            :render-after-expand="false"
+            style="width: 100%"
+          />
+          <span class="form-tip">{{ form.type === "BUTTON" ? "按钮只能挂在页面下" : "目录和页面只能挂在目录下（或顶级）" }}</span>
+        </el-form-item>
+        <el-form-item label="名称" prop="name"><el-input v-model="form.name" maxlength="50" /></el-form-item>
+        <el-form-item v-if="form.type !== 'BUTTON'" label="路由路径" prop="path"><el-input v-model="form.path" placeholder="/system/user" maxlength="200" /></el-form-item>
+        <el-form-item v-if="form.type === 'MENU'" label="组件路径" prop="component"><el-input v-model="form.component" placeholder="system/user/UserList" maxlength="200" /></el-form-item>
+        <el-form-item v-if="form.type !== 'DIRECTORY'" label="权限码" prop="permission"><el-input v-model="form.permission" placeholder="system:user:list" maxlength="100" /></el-form-item>
         <el-form-item label="图标" v-if="form.type !== 'BUTTON'"><IconPicker v-model="form.icon" /></el-form-item>
         <el-form-item label="排序"><el-input-number v-model="form.sort" :min="0" /></el-form-item>
         <el-form-item label="可见" v-if="form.type !== 'BUTTON'">
@@ -62,13 +78,12 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import { ElMessage } from "element-plus";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { ElMessage, type FormInstance, type FormRules } from "element-plus";
+import { R, clearValidate, validateForm } from "@/utils/formRules";
 import { menuApi } from "@/api/system";
 import type { MenuNode } from "@/api/auth";
-import { useAuthStore } from "@/stores/auth";
 
-const auth = useAuthStore();
 const tree = ref<MenuNode[]>([]);
 const dialogVisible = ref(false);
 const editingId = ref<number | null>(null);
@@ -96,10 +111,30 @@ async function load() {
   }
 }
 
-function openCreate(parentId: number) {
-  Object.assign(form, emptyForm, { parentId });
+// ---------- 上级选择：层级规则与后端 MenuService.assertParent 一致 ----------
+type ParentOption = { id: number; name: string; type: string; children: ParentOption[] };
+/** 可选上级：顶级 + 全部目录/页面（排除按钮，编辑时排除自己及子孙，避免选出循环） */
+const parentOptions = computed<ParentOption[]>(() => {
+  const prune = (nodes: MenuNode[]): ParentOption[] =>
+    nodes
+      .filter((n) => n.type !== "BUTTON" && n.id !== editingId.value)
+      .map((n) => ({ id: n.id, name: n.name, type: n.type, children: prune(n.children ?? []) }));
+  return [{ id: 0, name: "顶级", type: "DIRECTORY", children: prune(tree.value) }];
+});
+/** 按当前类型禁用不合法的上级：按钮 → 只能选页面；目录/页面 → 只能选目录或顶级 */
+function parentDisabled(n: ParentOption) {
+  return form.type === "BUTTON" ? n.type !== "MENU" : n.type !== "DIRECTORY";
+}
+
+/** 新增：在目录下默认建页面，在页面下默认建按钮 */
+function openCreate(parent?: MenuNode) {
+  Object.assign(form, emptyForm, {
+    parentId: parent?.id ?? 0,
+    type: parent?.type === "MENU" ? "BUTTON" : "MENU",
+  });
   editingId.value = null;
   dialogVisible.value = true;
+  nextTick(() => clearValidate(formRef));
 }
 
 function openEdit(row: MenuNode) {
@@ -116,17 +151,32 @@ function openEdit(row: MenuNode) {
   });
   editingId.value = row.id;
   dialogVisible.value = true;
+  nextTick(() => clearValidate(formRef));
 }
 
+// ---------- 表单校验（与后端 MenuService.assertMenuShape 一致：页面必须有路由与组件，按钮必须有权限码） ----------
+const formRef = ref<FormInstance>();
+const formRules: FormRules = {
+  name: [R.required("菜单名称"), R.max(50)],
+  path: [R.check((v) => (form.type === "MENU" && !String(v ?? "").trim() ? "页面必须填写路由路径" : null))],
+  component: [R.check((v) => (form.type === "MENU" && !String(v ?? "").trim() ? "页面必须填写组件路径" : null))],
+  permission: [R.check((v) => (form.type === "BUTTON" && !String(v ?? "").trim() ? "按钮必须填写权限码" : null))],
+};
+
 async function submit() {
-  if (!form.name) return ElMessage.warning("请填写菜单名称");
-  if (saving.value) return;
+  if (saving.value || !(await validateForm(formRef))) return;
+  // 只提交当前类型用得到的字段（切换类型后被隐藏的输入框里还留着旧值）；清空的输入框传 null 表示清空
+  const t = form.type;
   const data = {
-    ...form,
-    path: form.path || undefined,
-    component: form.component || undefined,
-    permission: form.permission || undefined,
-    icon: form.icon || undefined,
+    parentId: form.parentId,
+    name: form.name.trim(),
+    type: t,
+    sort: form.sort,
+    visible: form.visible,
+    path: t !== "BUTTON" ? form.path.trim() || null : null,
+    component: t === "MENU" ? form.component.trim() || null : null,
+    permission: t !== "DIRECTORY" ? form.permission.trim() || null : null,
+    icon: t !== "BUTTON" ? form.icon || null : null,
   };
   saving.value = true;
   try {
@@ -140,10 +190,17 @@ async function submit() {
   }
 }
 
+/** 删除：按钮显示 loading，防止重复点击 */
+const deletingId = ref<number>();
 async function remove(row: MenuNode) {
-  await menuApi.remove(row.id);
-  ElMessage.success("已删除");
-  load();
+  deletingId.value = row.id;
+  try {
+    await menuApi.remove(row.id);
+    ElMessage.success("已删除");
+    load();
+  } finally {
+    deletingId.value = undefined;
+  }
 }
 
 onMounted(load);

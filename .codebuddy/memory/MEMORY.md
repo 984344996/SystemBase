@@ -19,6 +19,17 @@
 - 质量门：`pnpm lint`（tsc + prisma validate + ESLint）、`pnpm test`（后端 jest 覆盖率门 50% + 前端 vitest）
 - 依赖漏洞用根 package.json 的 `pnpm.overrides` 在同大版本内修复；新项目用 `./sb.sh init-project`，发版用 `scripts/bump-version.mjs`
 
+## 框架约定（2026-11-22 新增，第二轮审查后）
+- 前端表单：`el-form ref + :model + :rules`，规则用 `utils/formRules.ts` 的 `R.*`，提交前 `validateForm`；行内删除用 `useRowBusy`；有副作用操作用 `confirmAction`；回车可提交的函数开头防重入
+- 列表页 `<TablePager ... :error="error">`（usePagedList 返回 error）
+- 接口实体时间是 UTC ISO，前端 `formatTime` 换算本地；提交时间用 `toISOString()`（公告等 DTO 要求带时区）
+- 登录会话：accessToken 带 `sid`，登出 / 重放经 `SessionRevocationService` 即时吊销；`JWT_REFRESH_ABSOLUTE_MAX` 默认 30d
+- 用户软删除改写用户名为 `原名#del<id>`；seed 菜单按权限码识别、只同步 path/component
+- 任务处理器可读 `ctx.signal`（应用关闭时 abort）；`JOB_SHUTDOWN_WAIT_SECONDS` 默认 8
+- `main.ts` 的 HTTP 配置在 `core/bootstrap/configure-app.ts`，E2E 共用；新增 HTTP 层配置写这里
+- 手写迁移后用影子库验证：`prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url mysql://root@127.0.0.1:3306/<临时库> --exit-code`（CI 已有同样检查）
+- 本地 `system_base` 库有非本项目残留表（resume_* 等），`--from-schema-datasource` 对比时只看本项目相关部分
+
 ## 部署约定（2026-11-06 更新）
 - 远程发布在服务器后台执行（setsid nohup），日志 `shared/deploy-logs/<版本号>.log`(.rc/.pid)，`./sb.sh <env> deploy-log` 查看
 - 新增部署段变量时必须同时加进 `deploy.sh` 的 `DEPLOY_KEYS` 与 `deploy.ps1` 的 `$deployKeys`（当前含 PROTECTED）

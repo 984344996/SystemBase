@@ -1,4 +1,5 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { configureApp } from '../src/core/bootstrap/configure-app';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
@@ -9,7 +10,7 @@ import { PrismaService } from '../src/core/prisma/prisma.service';
  * 覆盖提权、改密后旧 token 失效、强制改密服务端拦截、refresh 并发、默认拒绝、文件上传下载。
  */
 describe('Security E2E（审查修复回归）', () => {
-  let app: INestApplication;
+  let app: NestExpressApplication;
   let prisma: PrismaService;
   let adminToken: string;
   const stamp = Date.now().toString(36);
@@ -42,11 +43,9 @@ describe('Security E2E（审查修复回归）', () => {
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-    app = moduleRef.createNestApplication();
-    app.setGlobalPrefix('api');
-    app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true, transformOptions: { enableImplicitConversion: true } }),
-    );
+    // 与 main.ts 完全一致的 HTTP 层配置
+    app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
+    configureApp(app);
     await app.init();
     prisma = app.get(PrismaService);
     adminToken = (await login('admin', 'admin123')).accessToken;
@@ -120,6 +119,22 @@ describe('Security E2E（审查修复回归）', () => {
       // 宽限期内的重复使用不判定为重放：成功拿到的新 refreshToken 仍可用
       await request(server()).post('/api/auth/refresh').send({ refreshToken: winner.body.data.refreshToken }).expect(201);
       await request(server()).get('/api/auth/profile').set(auth(accessToken)).expect(200);
+    });
+  });
+
+  describe('登出', () => {
+    it('登出后该会话的 accessToken 立即失效、refreshToken 不能再用；同账号其他会话不受影响', async () => {
+      const mine = await login('admin', 'admin123');
+      const other = await login('admin', 'admin123');
+      await request(server()).get('/api/auth/profile').set(auth(mine.accessToken)).expect(200);
+
+      await request(server()).post('/api/auth/logout').send({ refreshToken: mine.refreshToken }).expect(201);
+
+      // 原来登出只吊销 refreshToken，accessToken 在剩余有效期内（默认 2 小时）仍可调用接口
+      const res = await request(server()).get('/api/auth/profile').set(auth(mine.accessToken)).expect(401);
+      expect(res.body.message).toContain('已退出登录');
+      await request(server()).post('/api/auth/refresh').send({ refreshToken: mine.refreshToken }).expect(401);
+      await request(server()).get('/api/auth/profile').set(auth(other.accessToken)).expect(200);
     });
   });
 

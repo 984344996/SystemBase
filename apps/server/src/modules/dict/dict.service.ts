@@ -1,9 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { HttpStatus, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../core/prisma/prisma.service';
 import { withUniqueViolation } from '../../core/prisma/prisma-error.util';
 import { EventBusService } from '../../core/redis/event-bus.service';
 import { CreateDictDto, CreateDictItemDto, QueryDictDto, UpdateDictDto, UpdateDictItemDto } from './dict.dto';
-import { duplicate } from '../../core/filter/business.exception';
+import { BizCode, BusinessException, duplicate } from '../../core/filter/business.exception';
 
 /** 字典缓存失效事件主题 */
 const TOPIC = 'dict:invalidate';
@@ -16,10 +16,14 @@ export interface DictOption {
 /**
  * 数据字典：下拉选项的统一来源（避免各页面硬编码枚举）。
  * 读多写少 → 进程内缓存（60s），写操作经事件广播让所有实例立即失效。
+ * 缓存按编码记版本号：查库期间发生过失效时，查到的（可能是旧的）结果不写回缓存，
+ * 否则并发下旧数据会在缓存里再留 60 秒。
  */
 @Injectable()
 export class DictService {
   private cache = new Map<string, { options: DictOption[]; expiresAt: number }>();
+  /** 每个字典编码的失效次数（版本号） */
+  private versions = new Map<string, number>();
   private readonly ttlMs = 60_000;
 
   constructor(
@@ -27,7 +31,10 @@ export class DictService {
     private readonly bus: EventBusService,
   ) {
     // 本实例与其他实例的失效事件都在这里处理（payload 为字典编码）
-    this.bus.subscribe(TOPIC, (code) => this.cache.delete(code));
+    this.bus.subscribe(TOPIC, (code) => {
+      this.cache.delete(code);
+      this.versions.set(code, (this.versions.get(code) ?? 0) + 1);
+    });
   }
 
   // ---------- 字典类型 ----------
@@ -55,10 +62,22 @@ export class DictService {
     return updated;
   }
 
-  async remove(id: number) {
+  /**
+   * 删除字典：字典项随字典级联删除（schema onDelete: Cascade）
+   *   还有字典项时必须显式 force 确认：误删会把全部选项一起删掉，业务表里按值引用的数据随之变成无法翻译的原始值
+   */
+  async remove(id: number, force = false) {
     const dict = await this.prisma.dict.findUnique({ where: { id } });
     if (!dict) throw new NotFoundException('字典不存在');
-    // 字典项随字典级联删除（schema onDelete: Cascade）
+    const itemCount = await this.prisma.dictItem.count({ where: { dictId: id } });
+    if (itemCount > 0 && !force) {
+      throw new BusinessException(
+        BizCode.INVALID_STATE,
+        `字典「${dict.name}」下还有 ${itemCount} 个选项，确认一并删除请再次确认`,
+        HttpStatus.CONFLICT,
+        { itemCount },
+      );
+    }
     await this.prisma.dict.delete({ where: { id } });
     this.invalidate(dict.code);
     return { success: true };
@@ -113,6 +132,7 @@ export class DictService {
   async options(code: string): Promise<DictOption[]> {
     const cached = this.cache.get(code);
     if (cached && cached.expiresAt > Date.now()) return cached.options;
+    const version = this.versions.get(code) ?? 0;
     const dict = await this.prisma.dict.findUnique({
       where: { code },
       include: {
@@ -124,7 +144,10 @@ export class DictService {
       },
     });
     if (!dict) throw new NotFoundException(`字典 ${code} 不存在`);
-    this.cache.set(code, { options: dict.items, expiresAt: Date.now() + this.ttlMs });
+    // 查库期间被失效过（有人改了字典）：结果可能是旧的，只返回不缓存
+    if ((this.versions.get(code) ?? 0) === version) {
+      this.cache.set(code, { options: dict.items, expiresAt: Date.now() + this.ttlMs });
+    }
     return dict.items;
   }
 

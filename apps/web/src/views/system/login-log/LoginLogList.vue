@@ -40,7 +40,7 @@
       </el-table-column>
     </el-table>
 
-    <TablePager :query="query" :total="Math.min(total, 5000)" :load="load" />
+    <TablePager :query="query" :total="Math.min(total, 5000)" :load="load" :error="error" />
   </div>
 </template>
 
@@ -52,7 +52,7 @@ import { usePagedList } from "@/composables/usePagedList";
 
 /** 命中过多时后端只保留最新一部分，页面上提示 */
 const truncated = ref(false);
-const { query, rows, total, loading, load, search } = usePagedList(
+const { query, rows, total, loading, error, load, search } = usePagedList(
   { date: today(), keyword: "", success: "", page: 1, pageSize: 10 },
   async (q, { signal }) => {
     const res = await monitorApi.loginLogs(q, signal);

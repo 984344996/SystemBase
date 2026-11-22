@@ -38,7 +38,7 @@ Service 方法：`list()`、`all()`、`create()`、`update()`、`remove()`、`ge
 | GET | /api/dicts | `system:dict:list` | 字典类型列表 |
 | POST | /api/dicts | `system:dict:create` | 新增字典类型 |
 | PUT | /api/dicts/:id | `system:dict:update` | update |
-| DELETE | /api/dicts/:id | `system:dict:delete` | 删除字典（字典项级联删除） |
+| DELETE | /api/dicts/:id | `system:dict:delete` | 删除字典（还有字典项时需传 force=true 确认一并删除） |
 | GET | /api/dicts/:id/items | `system:dict:list` | 某字典下的全部选项 |
 | POST | /api/dicts/:id/items | `system:dict:update` | addItem |
 | PUT | /api/dicts/items/:itemId | `system:dict:update` | updateItem |
@@ -77,7 +77,7 @@ Service 方法：`list()`、`upload()`、`open()`、`remove()`、`purge()`
 | DELETE | /api/jobs/:id | `system:job:delete` | 删除任务 |
 | POST | /api/jobs/:id/run | `system:job:run` | 立即执行一次（手动触发） |
 
-Service 方法：`onModuleInit()`、`setImmediate()`、`onModuleDestroy()`、`clearInterval()`、`reconcile()`、`logs()`、`create()`、`update()`、`toggle()`、`remove()`、`runOnce()`、`clearTimeout()`、`schedule()`、`runWithTraceId()`、`deschedule()`、`reschedule()`、`run()`、`reject()`、`clearTimeout()`、`resolveHandler()`、`nextRunAt()`、`scheduledFireTime()`、`handleMisfire()`、`assertCron()`
+Service 方法：`onModuleInit()`、`setImmediate()`、`onModuleDestroy()`、`startReconcile()`、`reconcile()`、`logs()`、`create()`、`update()`、`toggle()`、`remove()`、`runOnce()`、`clearTimeout()`、`schedule()`、`runWithTraceId()`、`deschedule()`、`reschedule()`、`run()`、`reject()`、`clearTimeout()`、`resolveHandler()`、`nextRunAt()`、`scheduledFireTime()`、`handleMisfire()`、`assertCron()`
 
 ## menu
 
@@ -88,7 +88,7 @@ Service 方法：`onModuleInit()`、`setImmediate()`、`onModuleDestroy()`、`cl
 | PUT | /api/menus/:id | `system:menu:update` | 更新菜单 |
 | DELETE | /api/menus/:id | `system:menu:delete` | 删除菜单（连带清理角色关联） |
 
-Service 方法：`tree()`、`create()`、`update()`、`remove()`、`assertNoCycle()`、`assertMenuShape()`
+Service 方法：`tree()`、`create()`、`update()`、`remove()`、`assertNoCycle()`、`assertParent()`、`normalize()`
 
 ## monitor
 

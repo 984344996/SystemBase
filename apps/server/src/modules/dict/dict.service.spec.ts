@@ -19,6 +19,7 @@ function setup() {
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
     },
   };
   const service = new DictService(prisma as unknown as PrismaService, localEventBus());
@@ -37,6 +38,26 @@ describe('DictService 字典类型', () => {
     prisma.dict.findUnique.mockResolvedValue(null);
     await expect(service.update(404, { name: 'x' })).rejects.toBeInstanceOf(NotFoundException);
     await expect(service.remove(404)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('DictService 删除字典', () => {
+  it('还有选项且未确认 → 409（业务码 40902，附带选项数），不删除', async () => {
+    const { service, prisma } = setup();
+    prisma.dict.findUnique.mockResolvedValue({ id: 1, code: 'c', name: '状态' });
+    prisma.dictItem.count.mockResolvedValue(3);
+    await expect(service.remove(1)).rejects.toMatchObject({ status: 409, response: { bizCode: BizCode.INVALID_STATE, data: { itemCount: 3 } } });
+    expect(prisma.dict.delete).not.toHaveBeenCalled();
+  });
+
+  it('force 确认后连同选项一起删除；没有选项时直接删除', async () => {
+    const { service, prisma } = setup();
+    prisma.dict.findUnique.mockResolvedValue({ id: 1, code: 'c', name: '状态' });
+    prisma.dictItem.count.mockResolvedValue(3);
+    await expect(service.remove(1, true)).resolves.toEqual({ success: true });
+    prisma.dictItem.count.mockResolvedValue(0);
+    await expect(service.remove(1)).resolves.toEqual({ success: true });
+    expect(prisma.dict.delete).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -96,5 +117,19 @@ describe('DictService 读取', () => {
     await expect(service.labelOf('user_status', 'UNKNOWN')).resolves.toBe('UNKNOWN');
     prisma.dict.findUnique.mockResolvedValue(null);
     await expect(service.labelOf('nope', 'X')).resolves.toBe('X');
+  });
+});
+
+describe('DictService 缓存并发', () => {
+  it('查库期间发生失效：查到的结果不写回缓存（下次重新查库，拿到新数据）', async () => {
+    const { service, prisma } = setup();
+    let resolveQuery: (v: unknown) => void = () => undefined;
+    prisma.dict.findUnique.mockImplementationOnce(() => new Promise((r) => (resolveQuery = r)));
+    const pending = service.options('c');
+    (service as any).invalidate('c'); // 查询还没返回时有人改了字典
+    resolveQuery({ id: 1, code: 'c', items: [{ label: '旧', value: 'old' }] });
+    await expect(pending).resolves.toEqual([{ label: '旧', value: 'old' }]);
+    prisma.dict.findUnique.mockResolvedValueOnce({ id: 1, code: 'c', items: [{ label: '新', value: 'new' }] });
+    await expect(service.options('c')).resolves.toEqual([{ label: '新', value: 'new' }]);
   });
 });

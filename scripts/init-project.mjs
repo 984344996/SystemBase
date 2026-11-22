@@ -77,7 +77,8 @@ if (apply && !flags.has('force') && git('status', '--porcelain', '--untracked-fi
 // 三、要替换的文件与规则
 // ============================================================
 /** 不处理的文件：真实环境配置（含密码，不归 git 管但以防万一）、二进制、本脚本 */
-const SKIP = [/(^|\/)node_modules\//, /(^|\/)dist\//, /^deploy\/envs\/(?!.*\.example$)/, /\.(png|jpe?g|gif|ico|svg|woff2?|ttf|zip|gz)$/i];
+// .codebuddy/：AI 助手的会话记忆与计划（记录的是原项目的历史，不应被改名）
+const SKIP = [/(^|\/)node_modules\//, /(^|\/)dist\//, /^\.codebuddy\//, /^deploy\/envs\/(?!.*\.example$)/, /\.(png|jpe?g|gif|ico|svg|woff2?|ttf|zip|gz)$/i];
 const files = tracked.filter((f) => f !== SELF && !SKIP.some((re) => re.test(f)) && fs.existsSync(path.join(ROOT, f)));
 
 /** 替换规则：顺序有意义（先替换更长的 / 更具体的） */

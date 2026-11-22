@@ -21,6 +21,7 @@
             :model-value="row.status === 'ENABLED'"
             :disabled="!auth.hasPerm('system:job:update') || !row.handlerExists"
             :loading="busyId === row.id"
+            :before-change="() => confirmToggle(row)"
             @change="toggle(row)"
           />
         </template>
@@ -38,9 +39,9 @@
           <el-button v-if="row.handlerExists" v-permission="'system:job:run'" link type="success" :disabled="busyId === row.id" @click="runNow(row)">立即执行</el-button>
           <el-button link type="primary" @click="openLogs(row)">日志</el-button>
           <el-button v-permission="'system:job:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
-          <el-popconfirm title="确定删除该任务吗？" @confirm="remove(row)">
+          <el-popconfirm title="确定删除该任务吗？" @confirm="runDelete(row.id, () => remove(row))">
             <template #reference>
-              <el-button v-permission="'system:job:delete'" link type="danger">删除</el-button>
+              <el-button v-permission="'system:job:delete'" link type="danger" :loading="deletingId === row.id">删除</el-button>
             </template>
           </el-popconfirm>
         </template>
@@ -125,6 +126,11 @@ import { ElMessage } from "element-plus";
 import { jobApi, type JobRow, type JobLogRow } from "@/api/system";
 import { useAuthStore } from "@/stores/auth";
 import { formatTime, today } from "@/utils/datetime";
+import { confirmAction } from "@/utils/confirm";
+import { useRowBusy } from "@/composables/useRowBusy";
+
+/** 行内删除：按钮 loading + 防重复点击 */
+const { busyId: deletingId, run: runDelete } = useRowBusy();
 
 const auth = useAuthStore();
 const rows = ref<JobRow[]>([]);
@@ -206,6 +212,14 @@ async function submit() {
 /** 进行中的行操作（开关/立即执行）：同一行同一时刻只允许一个，防连点重复执行 */
 const busyId = ref<number | null>(null);
 
+/** 启停前确认：暂停后到点不再执行，启用后会按 cron 立即开始调度 */
+function confirmToggle(row: JobRow) {
+  if (busyId.value) return false;
+  return row.status === "ENABLED"
+    ? confirmAction(`暂停任务「${row.name}」？暂停期间到点不会执行。`, { confirmText: "暂停" })
+    : confirmAction(`启用任务「${row.name}」？将按 cron「${row.cronExpr}」开始调度。`, { confirmText: "启用", type: "info" });
+}
+
 async function toggle(row: JobRow) {
   if (busyId.value) return;
   busyId.value = row.id;
@@ -220,6 +234,7 @@ async function toggle(row: JobRow) {
 
 async function runNow(row: JobRow) {
   if (busyId.value) return;
+  if (!(await confirmAction(`立即执行任务「${row.name}」？会马上运行一次（不影响原有调度）。`, { confirmText: "执行" }))) return;
   busyId.value = row.id;
   ElMessage.info("已触发执行");
   try {
@@ -255,14 +270,18 @@ function reloadLogs() {
 
 /** 执行记录加载（表格显示 loading） */
 const logLoading = ref(false);
+/** 请求序号：快速切换日期 / 状态 / 任务时丢弃过期响应，避免旧结果覆盖新结果 */
+let logsSeq = 0;
 async function loadLogs() {
+  const seq = ++logsSeq;
   logLoading.value = true;
   try {
     const res = await jobApi.logs({ ...logQuery, status: logQuery.status || undefined });
+    if (seq !== logsSeq) return;
     logRows.value = res.list;
     logTotal.value = res.total;
   } finally {
-    logLoading.value = false;
+    if (seq === logsSeq) logLoading.value = false;
   }
 }
 

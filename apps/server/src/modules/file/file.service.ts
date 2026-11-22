@@ -65,7 +65,9 @@ export class FileService {
 
   async upload(file: UploadedFile, uploaderId?: number) {
     const { ext, mime } = this.resolveType(file);
-    const sub = new Date().toISOString().slice(0, 7).replace('-', ''); // yyyyMM
+    // 按服务器本地时间（SB_TZ）分月目录 yyyyMM（toISOString 是 UTC，每月 1 号 0~8 点的文件会落到上个月目录）
+    const now = new Date();
+    const sub = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
     const target = join(this.dir, sub);
     if (!existsSync(target)) mkdirSync(target, { recursive: true });
     const relPath = `${sub}/${randomUUID()}${ext}`;

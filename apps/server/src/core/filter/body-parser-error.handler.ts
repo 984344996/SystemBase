@@ -21,8 +21,9 @@ export function bodyParserErrorHandler(logger: AppLogger, limit: string): ErrorR
     const traceId = (typeof incoming === 'string' && /^[a-zA-Z0-9-]{8,64}$/.test(incoming) && incoming) || logger.newTraceId();
 
     logger.access(
-      { traceId, method: req.method, url: req.originalUrl, status, ip: req.ip, reason: err.type, length: req.headers['content-length'] },
-      `${req.method} ${req.originalUrl} ${status} ${message}`,
+      // 只记路径不记查询串（与访问日志一致：查询串里可能带 token 等敏感参数）
+      { traceId, method: req.method, url: req.originalUrl.split('?')[0], status, ip: req.ip, reason: err.type, length: req.headers['content-length'] },
+      `${req.method} ${req.originalUrl.split('?')[0]} ${status} ${message}`,
       'warn',
     );
     res.setHeader('X-Trace-Id', traceId);

@@ -69,6 +69,8 @@ const level = computed(() => Math.min(3, rules.value.filter((r) => r.pass).lengt
 const strengthText = computed(() => ["太弱", "较弱", "中等", "较强"][level.value]);
 
 async function submit() {
+  // 防重入：回车提交时按钮的 :loading 拦不住；并发的第二次请求会因原密码已变而报「原密码不正确」
+  if (loading.value) return;
   if (!form.oldPassword || !form.newPassword) return ElMessage.warning("请输入当前密码与新密码");
   if (form.newPassword !== form.confirm) return ElMessage.warning("两次输入的新密码不一致");
   const failed = rules.value.find((r) => !r.pass);
@@ -104,7 +106,7 @@ function onLogout() {
   background: linear-gradient(135deg, #0a1929 0%, #12365f 55%, #1b5a8f 100%);
 }
 .force-card {
-  width: 460px;
+  width: min(460px, calc(100vw - 32px)); /* 窄屏（手机）时随屏幕缩小 */
   background: var(--sb-glass-bg);
   border-radius: 12px;
   padding: 36px 36px 28px;

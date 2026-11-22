@@ -54,6 +54,12 @@ if (fs.existsSync(changelog)) {
 
 // ---------- 3. 可选：提交并打 tag ----------
 if (tag) {
+  // 提交前确认暂存区里没有别的改动：否则会被一起提交进「chore: release」（这次版本号改动本身还没 add）
+  const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: ROOT, encoding: 'utf8' }).trim();
+  if (staged) {
+    console.error(`✗ 暂存区还有其他改动，未提交、未打 tag（版本号已改好）：\n${staged}\n  先提交或 git restore --staged 后重新执行 --tag`);
+    process.exit(1);
+  }
   execFileSync('git', ['add', ...pkgFiles, 'CHANGELOG.md'], { cwd: ROOT, stdio: 'inherit' });
   execFileSync('git', ['commit', '-m', `chore: release v${version}`], { cwd: ROOT, stdio: 'inherit' });
   execFileSync('git', ['tag', `v${version}`], { cwd: ROOT, stdio: 'inherit' });

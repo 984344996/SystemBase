@@ -117,10 +117,10 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 ./sb.sh remote-release db-restore backup/remote-release/system_base_20261003120000.sql.gz
 ```
 
-- 备份在**服务器**执行（`mysqldump --single-transaction`，不锁表），完成后 `scp` 回本地；服务器 `shared/backup` 同时保留一份并按 7 天滚动清理
+- 备份在**服务器**执行（`mysqldump --single-transaction`，不锁表），完成后 `scp` 回本地；服务器 `shared/backup` 同时保留一份，按 env 应用段 `KEEP_BACKUP_DAYS`（默认 7）天滚动清理；备份文件权限 600（仅属主可读）
 - **自动备份**：每次发布有待执行的迁移时先备份（`auto-before-migrate`，失败即中止发布）；`fresh` 清库前备份（`auto-before-fresh`）；发布时自动安装每日定时备份（`/etc/cron.d/<APP_NAME>-db-backup`，默认每天 3 点，env 应用段 `DB_BACKUP_CRON` 可改时间或设为 `off`）
 - ⚠ 服务器备份与数据库在**同一台机器**：机器故障会一起丢失。重要数据请定期 `db-backup` 拉回本地，或另行同步到对象存储/其他机器
-- 恢复是危险操作：必须输入**数据库名**确认；服务器先对当前库做一次备份（`auto-before-restore`），恢复期间应用**暂停服务**，库内现有表会被全部删除后再导入，导入后自动执行 `migrate deploy` 把结构对齐到当前代码（备份比代码新时会提示发布对应版本）
+- 恢复是危险操作：必须输入**数据库名**确认；服务器先对当前库做一次备份（`auto-before-restore`），恢复期间应用**暂停服务**，库内现有表会被全部删除后再导入（**导入失败时自动用 `auto-before-restore` 回退**，回退也失败则应用保持停止，不在空库上运行），导入后自动执行 `migrate deploy` 把结构对齐到当前代码（备份比代码新时会提示发布对应版本）
 - 本地开发库同样可备份：`./sb.sh local db-backup [备注]` / `./sb.sh local db-restore <文件>` / `./sb.sh local db-list`
 - `backup/` 目录已被 gitignore（含业务数据，勿提交）
 
@@ -138,7 +138,7 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 ./sb.sh setup-hooks     # 一次性：把 .githooks 设为 git hooks 目录
 ```
 
-之后每次 `git commit` 会自动跑 `pnpm lint`（类型检查 + `prisma validate`）与 `pnpm test`，失败则提交终止。临时跳过：`SKIP_HOOKS=1 git commit ...`。不引入 husky 等依赖。
+之后每次 `git commit` 会自动跑 `pnpm lint`（类型检查 + `prisma validate` + ESLint）、`pnpm test`（前后端单测）与生成文档漂移检查（`pnpm docs:gen` 后 `docs/generated` 有未提交的变化即拦下），失败则提交终止。临时跳过：`SKIP_HOOKS=1 git commit ...`。不引入 husky 等依赖。
 
 可选：`SKIP_TESTS=1 ./sb.sh remote-pre deploy` 跳过单测（Windows：`.\sb.ps1 -SkipTests remote-pre deploy`）。
 
@@ -155,9 +155,9 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 └── shared/                        跨版本共享
     ├── .env / .env.prev           生产配置 / 上一次发布或回滚前的配置（权限 600）
     ├── logs/app.YYYY-MM-DD.log    应用日志（各版本 apps/server/logs 软链到这里）
-    ├── pm2/out.log, error.log     PM2 捕获的进程输出（启动失败、崩溃）
+    ├── pm2/out.log, error.log     PM2 捕获的进程输出（启动失败、崩溃；/etc/logrotate.d/<APP_NAME> 每天或超过 50M 轮转，保留 14 份）
     ├── uploads/                   上传文件
-    ├── backup/                    数据库备份（保留 7 天）
+    ├── backup/                    数据库备份（保留 KEEP_BACKUP_DAYS 天，默认 7；目录权限 700）
     └── deploy-logs/<版本号>.log   每次发布的完整输出（deploy-log 命令读取，保留 20 次）
 ```
 
@@ -166,6 +166,7 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 | 阶段 | 失败时 |
 |---|---|
 | 本地校验配置 / 单测 / 构建 / 打包校验 | 不上传，线上无影响 |
+| 服务器磁盘剩余不足 `MIN_FREE_MB`（env 应用段，默认 1024） | 解压前中止，线上无影响 |
 | 服务器解压、安装依赖、迁移前备份、迁移、seed | 删除半成品目录、还原配置，**线上版本不变**（fresh 已停的服务会重新拉起） |
 | 切换软链 + PM2 重启 → 60s 内 `/api/health` 未通过（或返回的版本号不是本次的） | **自动回滚**：配置、代码、Nginx 路由都回到上一版本；失败版本改名 `.failed` 保留现场 |
 | Nginx 刷新失败 | 本次改了 `SITE_PORT/SITE_DOMAIN/SITE_PATH` → 同样自动回滚；没改 → 沿用现有配置并警告 |
@@ -173,6 +174,10 @@ ls backup/remote-release                      # 或在本地用 ./sb.sh local db
 
 注意：迁移在切换前执行，自动回滚**不会回退数据库**。改表时遵循「先加后删」（新版本先兼容旧结构，下个版本再删旧列），保证回滚后旧代码仍可运行；迁移含 `DROP` / `RENAME` / `MODIFY` 等语句时发布日志会醒目提示。
 迁移执行到一半失败（MySQL 的 DDL 不支持事务）后，后续发布会被 Prisma 拒绝（P3009）：用 `migrate-status` 查看，用迁移前备份恢复或手工补齐，再 `migrate-resolve applied|rolled-back <迁移名>`。
+
+`rollback` 同样要求健康检查返回的版本号是目标版本；目标版本起不来时**自动切回原版本**（代码 + 配置 + Nginx），不会停在坏版本上。
+
+Nginx 配置生成（init / 发布 / 回滚都会执行）修改任何文件前先备份、新建的文件记入清单；`nginx -t` 失败或中途出错时全部还原并删除新建的文件，不会留下坏配置影响同机其他站点。请求体上限 `client_max_body_size` 按 `UPLOAD_MAX_SIZE` + 1MB 生成。
 
 fork 单实例模式下，每次发布 / 回滚后端会有数秒不可用（PM2 先停旧进程再起新进程），静态页面不受影响。
 
@@ -190,7 +195,8 @@ pnpm build                                     # 产物：apps/web/dist、apps/s
 cd apps/server
 pnpm prisma:deploy && node dist/database/seed.js
 NODE_ENV=production node dist/main.js          # 用 pm2/systemd 守护
-# nginx 配置参考 deploy/server/nginx-site.conf（替换 __APP_DIR__ / __PORT__）
+# nginx 配置参考 deploy/server/nginx-site.conf（__LISTEN__ / __SERVER_NAME__ / __APP_NAME__ / __BODY_MAX__）
+#   与 nginx-locations.conf（__PREFIX__ / __PORT__ / __APP_DIR__ / __BODY_MAX__），占位符含义见文件头注释
 ```
 
 ## 数据库迁移
@@ -355,6 +361,7 @@ mysql -uroot -p system_base < backup-2026-09-30.sql
 | 权限 / 系统参数 / 数据字典缓存失效 | 只在本进程 | 经 Redis 广播，所有实例立即失效 |
 | 全局限流计数 | 进程内存 | Redis 共享，多实例共用同一份额度 |
 | 登录失败计数与锁定、登录验证码 | 进程内存（带过期清理与容量上限） | Redis 共享：A 实例签发的验证码到 B 实例能校验；轮换实例无法绕过锁定 |
+| 登出 / token 泄露后 accessToken 即时失效 | 进程内存 | Redis 共享：在 A 实例登出，B 实例同样立即拒绝该会话的 accessToken |
 | 文件存储 | 服务器本地磁盘（`UPLOAD_DIR`） | 仍是本地磁盘：各实例文件不互通，需共享存储（NFS）或改造 `FileService` 接 OSS/S3 |
 | 日志 | 本机按天文件 | 仍是本机文件：需集中式日志（Loki/云日志），或逐台查看 |
 | 前端日志上报预算 `CLIENT_LOG_DAILY_MAX_BYTES` | 单实例 | 每个实例各自计算，按实例数折算 |

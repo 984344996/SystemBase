@@ -30,7 +30,11 @@ apps/server/src/
 
 ## 前端约定
 
-- **列表页**：分页/查询/加载用 `usePagedList`（自带请求竞态保护；fetcher 第二个参数 `{ signal }` 传给请求可取消旧请求），分页条用 `<TablePager>`，状态列用 `<StatusTag>`，表格绑 `v-loading`
+- **列表页**：分页/查询/加载用 `usePagedList`（自带请求竞态保护；fetcher 第二个参数 `{ signal }` 传给请求可取消旧请求），分页条用 `<TablePager ... :error="error">`（加载失败时显示「重试」），状态列用 `<StatusTag>`，表格绑 `v-loading`
+- **表单校验**：`el-form` 绑 `ref` + `:model` + `:rules`，规则用 `utils/formRules.ts` 的 `R.required / R.max / R.email / R.phone / R.check`（与后端 DTO 的必填、长度一致），提交前 `if (!(await validateForm(formRef))) return`，打开弹窗时 `clearValidate(formRef)`
+- **行内操作**：删除等行内按钮用 `useRowBusy()`（`:loading="deletingId === row.id"` + `runDelete(row.id, () => remove(row))`），防重复点击
+- **二次确认**：立即执行、启停、发布、批量 / 级联删除等有副作用的操作用 `confirmAction(文案)`；只删一行用 `<el-popconfirm>`
+- **防重入**：表单支持回车提交时，提交函数开头 `if (loading.value) return`（按钮的 `:loading` 拦不住回车）
 - **弹窗表单**：新增/编辑用 `useCrudForm`（`empty` / `fromRow` / `toPayload` / `create` / `update`），不要每页手写 visible/editingId/saving 一套
 - **字典**：下拉用 `<DictSelect code="xxx">`、显示用 `<DictTag code="xxx" :value>`（带缓存），不要在页面里硬编码选项
 - **图标**：一律 `<MenuIcon name="Setting" />`；不要 `import { Xxx } from "@element-plus/icons-vue"`（单文件包，任何静态引用都会把全部图标拉回首屏主包）
@@ -38,8 +42,8 @@ apps/server/src/
 - **业务码**：用 `@sb/shared` 的 `BizCode` + `bizCodeOf(e)` 判断，不要写死数字
 - **查询按钮绑 `search()` 而非 `load()`**：search 会先回到第 1 页（修「第 N 页改条件查询拿到空页」的隐性 bug）
 - **按钮权限**：一律 `v-permission="'system:xxx:action'"` 指令；需要 `:disabled` 等函数判断时才用 `auth.hasPerm()`
-- **时间/大小格式化**：统一 `utils/datetime` 的 `formatTime` / `formatSize`，不要在模板里内联 `replace('T',' ').slice(...)`
-- **样式**：`.toolbar` / `.muted` / `.mini` / `.pager` 已在全局 `styles/index.css`，不要再写 scoped 副本
+- **时间/大小格式化**：统一 `utils/datetime` 的 `formatTime` / `formatSize`，不要在模板里内联 `replace('T',' ').slice(...)`（接口实体时间是 UTC ISO 串，`formatTime` 会换算成本地时间；提交时间用 `Date.toISOString()`，后端要求带时区）
+- **样式**：`.toolbar` / `.muted` / `.mini` / `.pager` 已在全局 `styles/index.css`，不要再写 scoped 副本；弹窗写固定 `width` 即可（全局已限制不超出屏幕宽度）
 - **颜色**：一律用 Element Plus 变量（`var(--el-bg-color)`、`var(--el-text-color-secondary)`、`var(--el-color-primary)`、`var(--el-border-color)` 等），不要写死 `#fff` / `#909399`，否则深色模式下会露出亮块；项目自己的颜色在 `styles/index.css` 的 `:root` 与 `html.dark` 里成对定义
 - **API 层**：create/update 参数用 `Partial<XxxRow>` 等具体类型，删除返回用 `DeleteResult`，不用 `Record<string, unknown>`
 - **编辑表单只提交 DTO 白名单字段**：不要 `Object.assign(form, row)` 后把整行提交（id/createdAt 等会被后端 `forbidNonWhitelisted` 拒绝）

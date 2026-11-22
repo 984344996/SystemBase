@@ -13,6 +13,12 @@ import { RefreshDto } from './dto/refresh.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 
+/** 登录限流次数（每次请求读取；非法值回退默认 5） */
+export function loginLimit(): number {
+  const n = Number(process.env.THROTTLE_LOGIN_LIMIT);
+  return Number.isInteger(n) && n > 0 ? n : 5;
+}
+
 @ApiTags('认证')
 @Controller('auth')
 export class AuthController {
@@ -20,11 +26,12 @@ export class AuthController {
 
   /**
    * 登录：单独收紧限流（默认 5 次/分钟/IP，可配 THROTTLE_LOGIN_LIMIT）。
-   * 注：装饰器在 DI 容器就绪前求值，无法注入 ConfigService，故直读 process.env；
+   * limit 必须写成函数（每次请求时求值）：装饰器本身在模块导入时就执行，那时 ConfigModule 还没把
+   * .env 读进 process.env，写成 Number(process.env.X) 会永远取到默认值（env 文件里的配置不生效）。
    * 默认值须与 core/config/env.validation.ts 中的 THROTTLE_LOGIN_LIMIT 保持一致。
    */
   @Public()
-  @Throttle({ default: { limit: Number(process.env.THROTTLE_LOGIN_LIMIT || 5), ttl: 60_000 } })
+  @Throttle({ default: { limit: loginLimit, ttl: 60_000 } })
   @Post('login')
   @ApiOperation({ summary: '登录（返回 accessToken / refreshToken）' })
   login(@Body() dto: LoginDto, @Req() req: Request) {
@@ -88,7 +95,7 @@ export class AuthController {
   @AllowPendingPassword()
   @ApiOperation({ summary: '修改自己的密码（改完全端下线）' })
   @OperateLog({ module: '个人中心', action: '修改密码' })
-  changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto) {
-    return this.auth.changePassword(user, dto.oldPassword, dto.newPassword);
+  changePassword(@CurrentUser() user: AuthUser, @Body() dto: ChangePasswordDto, @Req() req: Request) {
+    return this.auth.changePassword(user, dto.oldPassword, dto.newPassword, req.ip);
   }
 }

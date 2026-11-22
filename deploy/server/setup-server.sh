@@ -151,12 +151,21 @@ else
   else
     # SQL 字符串字面量转义：反斜杠与单引号
     SQL_PASS="${DB_PASS//\\/\\\\}"; SQL_PASS="${SQL_PASS//\'/\'\'}"
+    # 恢复建账号前的密码策略（正常结束与中途失败都会调用；可重复调用）
+    restore_pw_policy() {
+      if [ -n "${PW_POLICY:-}" ] && [ "$PW_POLICY" != "LOW" ]; then
+        mysql_root -e "SET GLOBAL validate_password.policy=$PW_POLICY" 2>/dev/null \
+          || mysql_root -e "SET GLOBAL validate_password_policy=$PW_POLICY" 2>/dev/null || true
+      fi
+    }
     # MySQL 8 的 validate_password 组件（默认 MEDIUM）会拒绝弱密码（ERROR 1819），导致库建好但账号缺失
     # （后续 Prisma P1000）：建账号期间临时放宽为 LOW，完成后恢复
     PW_POLICY="$(mysql_root -N -e "SHOW VARIABLES LIKE 'validate_password%'" 2>/dev/null | awk '$1 ~ /policy$/ {print $NF}' | head -n 1 || true)"
     if [ -n "$PW_POLICY" ] && [ "$PW_POLICY" != "LOW" ]; then
       mysql_root -e "SET GLOBAL validate_password.policy=LOW" 2>/dev/null \
         || mysql_root -e "SET GLOBAL validate_password_policy=LOW" 2>/dev/null || true
+      # 中途失败（如建账号的 SQL 报错，set -e 直接退出）也要恢复，否则整个 MySQL 实例的密码策略一直停在 LOW
+      trap restore_pw_policy EXIT
       echo "    （已临时放宽 MySQL 密码策略以创建应用账号，完成后恢复为 $PW_POLICY；建议 env 中使用强密码）"
     fi
     # 建应用账号并授权：localhost（socket）与 127.0.0.1（TCP，兼容 skip-name-resolve）各建一个
@@ -170,10 +179,8 @@ ALTER USER '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$SQL_PASS';
 GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_USER'@'127.0.0.1';
 FLUSH PRIVILEGES;
 SQL
-    if [ -n "$PW_POLICY" ] && [ "$PW_POLICY" != "LOW" ]; then
-      mysql_root -e "SET GLOBAL validate_password.policy=$PW_POLICY" 2>/dev/null \
-        || mysql_root -e "SET GLOBAL validate_password_policy=$PW_POLICY" 2>/dev/null || true
-    fi
+    restore_pw_policy
+    trap - EXIT
   fi
   echo "    完成"
 fi

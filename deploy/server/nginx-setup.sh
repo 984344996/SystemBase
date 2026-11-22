@@ -8,11 +8,12 @@
 #   3. 配置了 SITE_PATH + SITE_DOMAIN 时，把路由片段 include 进该域名已有的 server 块
 #      （如与本应用共用一台服务器的其他站点），实现 https://域名/子路径 访问；
 #      注入前先清理本应用以前注入过的 include（域名/子路径改过时旧注入不会残留）
-# 读取 env：PORT / SITE_PORT / SITE_DOMAIN / SITE_PATH
-# 安全性：修改任何文件前先备份，nginx -t 失败自动还原全部文件，不影响线上
+# 读取 env：PORT / SITE_PORT / SITE_DOMAIN / SITE_PATH / UPLOAD_MAX_SIZE
+# 安全性：修改任何文件前先备份、新建的文件记入清单；nginx -t 失败或脚本中途出错时
+#         还原全部被改的文件并删除新建的文件（首次安装失败也不会留下坏配置拖垮同机其他站点）
 # ============================================================
 if [ -z "${BASH_VERSION:-}" ]; then exec bash "$0" "$@"; fi
-set -eu
+set -euo pipefail
 APP_DIR="${1:?用法: nginx-setup.sh APP_DIR APP_NAME ENV_FILE}"
 APP_NAME="${2:?缺少 APP_NAME}"
 ENV_FILE="${3:?缺少 ENV_FILE}"
@@ -28,6 +29,11 @@ SITE_DOMAIN="$(node "$ENV_TOOL" get "$ENV_FILE" SITE_DOMAIN "")"  # server_name
 SITE_PATH="$(node "$ENV_TOOL" get "$ENV_FILE" SITE_PATH "")"      # 子路径前缀
 [ -n "$SITE_PORT" ] || SITE_PORT=80
 [ -n "$SITE_DOMAIN" ] || SITE_DOMAIN="_"
+# 请求体上限：跟随后端上传上限 UPLOAD_MAX_SIZE（字节，默认 10MB）再留 1MB 余量（multipart 头部等）
+#   写死 10m 时，调大上传上限后 Nginx 会先返回 HTML 格式的 413，前端拿不到统一错误结构
+UPLOAD_MAX="$(node "$ENV_TOOL" get "$ENV_FILE" UPLOAD_MAX_SIZE 10485760)"
+[[ "$UPLOAD_MAX" =~ ^[0-9]+$ ]] || UPLOAD_MAX=10485760
+BODY_MAX="$(( (UPLOAD_MAX + 1048575) / 1048576 + 1 ))m"
 
 # SITE_PATH 规范化：以 / 开头、不以 / 结尾；留空 = 根路径部署
 if [ -n "$SITE_PATH" ]; then
@@ -43,20 +49,27 @@ mkdir -p "$SNIPPET_DIR"
 
 # ---------- 备份 / 还原：nginx -t 失败时恢复本次修改过的所有文件 ----------
 BACKUPS=""   # 被修改的文件（同目录 .sb-bak 备份）
+CREATED=""   # 本次新建的文件 / 软链（原来不存在；失败时删除，否则首次安装失败会留下坏配置）
 MOVED=""     # 被停用的默认站点：「原路径=新路径」或「link:软链路径」
+FINISHED=0   # 全部成功后置 1；否则退出时（含 set -e 中途出错）自动还原
 
-# 备份文件（同一文件只备份一次，保证还原的是最初内容）
+# 修改前调用：已存在的文件备份一次（保证还原的是最初内容）；不存在的记入新建清单
 backup() {
-  [ -f "$1" ] || return 0
-  case " $BACKUPS " in *" $1 "*) return 0 ;; esac
-  cp -a "$1" "$1.sb-bak"
-  BACKUPS="$BACKUPS $1"
+  case " $BACKUPS $CREATED " in *" $1 "*) return 0 ;; esac
+  if [ -e "$1" ] || [ -L "$1" ]; then
+    cp -a "$1" "$1.sb-bak"
+    BACKUPS="$BACKUPS $1"
+  else
+    CREATED="$CREATED $1"
+  fi
 }
 
-# 还原所有备份过的文件，并把停用的默认站点放回原处
+# 还原所有备份过的文件、删除本次新建的文件，并把停用的默认站点放回原处（可重复调用）
 restore_all() {
   local f m
-  for f in $BACKUPS; do [ -f "$f.sb-bak" ] && mv -f "$f.sb-bak" "$f"; done
+  for f in $BACKUPS; do [ -e "$f.sb-bak" ] && mv -f "$f.sb-bak" "$f"; done
+  for f in $CREATED; do rm -f "$f"; done
+  rm -f /etc/nginx/conf.d/*.sb-tmp /etc/nginx/sites-available/*.sb-tmp 2>/dev/null || true
   for m in $MOVED; do
     case "$m" in
       link:*) f="${m#link:}"; [ -f /etc/nginx/sites-available/default ] && ln -sf /etc/nginx/sites-available/default "$f" ;;
@@ -67,6 +80,17 @@ restore_all() {
 
 # 成功后删除备份文件
 clean_bak() { local f; for f in $BACKUPS; do rm -f "$f.sb-bak"; done; }
+
+# 兜底：脚本中途出错退出（set -e）时也还原，不留下半成品配置
+on_exit() {
+  local rc=$?
+  if [ "$FINISHED" != 1 ]; then
+    restore_all
+    [ "$rc" = 0 ] || echo "!! Nginx 配置生成中途失败（退出码 $rc），已还原被修改的配置并删除新建的文件（线上未受影响）"
+  fi
+  rm -f "${SITE_CONF:-}"
+}
+trap on_exit EXIT
 
 # 列出可能声明了其他站点的配置文件（排除本应用自己的文件与备份/临时文件）
 other_site_files() {
@@ -82,7 +106,7 @@ other_site_files() {
 # 1. 路由片段（前缀 / 端口 / 目录随 env 变化，每次重新生成）
 # ============================================================
 backup "$SNIPPET"
-sed -e "s#__PREFIX__#$SITE_PATH#g" -e "s#__PORT__#$PORT#g" -e "s#__APP_DIR__#$APP_DIR#g" \
+sed -e "s#__PREFIX__#$SITE_PATH#g" -e "s#__PORT__#$PORT#g" -e "s#__APP_DIR__#$APP_DIR#g" -e "s#__BODY_MAX__#$BODY_MAX#g" \
   < "$HERE/nginx-locations.conf" | tr -d '\r' > "$SNIPPET"
 # 子路径部署：不带尾斜杠的入口（如 /systembase-pre）不匹配 location /systembase-pre/，
 # 在共享域名的 server 块里会落到那个站点自己的 location /（打开的是别的系统的页面），这里精确匹配后跳转
@@ -96,13 +120,13 @@ location = $SITE_PATH {
 }
 EOF
 fi
-echo "    路由片段: $SNIPPET（路径前缀: ${SITE_PATH:-/} → 后端 127.0.0.1:$PORT）"
+echo "    路由片段: $SNIPPET（路径前缀: ${SITE_PATH:-/} → 后端 127.0.0.1:$PORT，请求体上限 $BODY_MAX）"
 
 # ============================================================
 # 2. 本应用站点 server 块
 # ============================================================
 SITE_CONF="$(mktemp)"
-sed -e "s#__LISTEN__#$SITE_PORT#g" -e "s#__SERVER_NAME__#$SITE_DOMAIN#g" -e "s#__APP_NAME__#$APP_NAME#g" \
+sed -e "s#__LISTEN__#$SITE_PORT#g" -e "s#__SERVER_NAME__#$SITE_DOMAIN#g" -e "s#__APP_NAME__#$APP_NAME#g" -e "s#__BODY_MAX__#$BODY_MAX#g" \
   < "$HERE/nginx-site.conf" | tr -d '\r' > "$SITE_CONF"
 
 # 写入站点文件；已配置 HTTPS（certbot 改写过）的不覆盖，避免丢失证书配置
@@ -145,6 +169,7 @@ disable_default_site() {
 if [ -d /etc/nginx/sites-available ]; then
   # Debian / Ubuntu：sites-available 存文件，sites-enabled 软链启用
   install_site "/etc/nginx/sites-available/$APP_NAME"
+  backup "/etc/nginx/sites-enabled/$APP_NAME"   # 软链首次创建时记入新建清单，失败时一并删除
   ln -sf "/etc/nginx/sites-available/$APP_NAME" "/etc/nginx/sites-enabled/$APP_NAME"
   disable_default_site /etc/nginx/sites-enabled/default
 else
@@ -152,7 +177,6 @@ else
   install_site "/etc/nginx/conf.d/$APP_NAME.conf"
   disable_default_site /etc/nginx/conf.d/default.conf
 fi
-rm -f "$SITE_CONF"
 
 # ============================================================
 # 3. 共享域名注入（SITE_PATH 子路径方式）
@@ -228,7 +252,8 @@ fi
 # ============================================================
 if ! nginx -t; then
   restore_all
-  echo "!! nginx -t 校验失败，已还原全部被修改的配置（线上未受影响）"
+  FINISHED=1   # 已还原并提示，退出钩子不再重复
+  echo "!! nginx -t 校验失败，已还原全部被修改的配置、删除新建的文件（线上未受影响）"
   exit 1
 fi
 # nginx 未运行（首次 init）直接启动，否则平滑重载（不断开现有连接）
@@ -237,6 +262,7 @@ if systemctl is-active --quiet nginx; then
 else
   systemctl enable --now nginx >/dev/null 2>&1 || true
 fi
+FINISHED=1
 clean_bak
 # ops.sh stop 留下的旧路由备份已无意义（上面生成并生效的就是正式路由）
 rm -f "$SNIPPET.disabled"

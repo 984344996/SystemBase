@@ -6,6 +6,7 @@ import { JwtStrategy } from './jwt.strategy';
 import { PermissionCacheService } from './permission-cache.service';
 import { LoginGuardService } from './login-guard.service';
 import { PrivilegeGuardService } from './privilege-guard.service';
+import { SessionRevocationService } from './session-revocation.service';
 
 @Global()
 @Module({
@@ -19,7 +20,7 @@ import { PrivilegeGuardService } from './privilege-guard.service';
       }),
     }),
   ],
-  providers: [JwtStrategy, PermissionCacheService, LoginGuardService, PrivilegeGuardService],
-  exports: [JwtModule, JwtStrategy, PermissionCacheService, LoginGuardService, PrivilegeGuardService],
+  providers: [JwtStrategy, PermissionCacheService, LoginGuardService, PrivilegeGuardService, SessionRevocationService],
+  exports: [JwtModule, JwtStrategy, PermissionCacheService, LoginGuardService, PrivilegeGuardService, SessionRevocationService],
 })
 export class SecurityModule {}

@@ -18,6 +18,7 @@ import { AuthUser } from '../../core/security/jwt.strategy';
 import { PermissionCacheService } from '../../core/security/permission-cache.service';
 import { isSuperAdmin } from '../../core/security/permissions.guard';
 import { LoginGuardService } from '../../core/security/login-guard.service';
+import { SessionRevocationService, parseDuration as parseDurationMs } from '../../core/security/session-revocation.service';
 import { checkPasswordStrength, isPasswordExpired, readPasswordPolicy } from '../../core/security/password-policy';
 import { LoginDto } from './dto/login.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -27,13 +28,9 @@ export interface TokenPair {
   refreshToken: string;
 }
 
-/** "7d"/"12h"/"30m" -> 毫秒 */
+/** "7d"/"12h"/"30m" -> 毫秒（格式不对时按 7 天） */
 export function parseDuration(s: string): number {
-  const m = /^(\d+)([smhd])$/.exec(s.trim());
-  if (!m) return 7 * 24 * 3600 * 1000;
-  const n = Number(m[1]);
-  const unit = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as 's' | 'm' | 'h' | 'd'];
-  return n * unit;
+  return parseDurationMs(s, 7 * 86_400_000);
 }
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -68,6 +65,7 @@ export class AuthService {
     private readonly logger: AppLogger,
     private readonly permCache: PermissionCacheService,
     private readonly guard: LoginGuardService,
+    private readonly revocation: SessionRevocationService,
   ) {}
 
   // ---------- 登录 ----------
@@ -134,7 +132,7 @@ export class AuthService {
     if (!record) throw new UnauthorizedException('登录已过期，请重新登录');
 
     if (record.revokedAt) {
-      this.handleRevokedReuse(record, req);
+      await this.handleRevokedReuse(record, req);
       throw new UnauthorizedException('登录已过期，请重新登录');
     }
 
@@ -150,20 +148,33 @@ export class AuthService {
         data: { revokedAt: new Date() },
       });
       if (claimed.count !== 1) return null; // 并发请求已抢先轮换
-      return this.issueTokens(record.user.id, record.user.username, record.user.name, req, tx);
+      // 沿用原会话（sessionId / 会话开始时间不变）：绝对过期上限从登录时起算，轮换不能无限续期
+      return this.issueTokens(record.user.id, record.user.username, record.user.name, req, tx, {
+        id: record.sessionId,
+        startedAt: record.sessionStartedAt,
+      });
     });
     if (!pair) throw new UnauthorizedException('登录已过期，请重新登录');
     return pair;
   }
 
   /** 已作废 token 再次出现：宽限期内视为并发刷新，否则判定为重放并吊销全部登录态 */
-  private handleRevokedReuse(
-    record: { userId: number; revokedAt: Date | null; user: { username: string } },
+  private async handleRevokedReuse(
+    record: { userId: number; sessionId: string; revokedAt: Date | null; user: { username: string } },
     req: Request,
-  ): void {
+  ): Promise<void> {
     const sinceRevoked = Date.now() - (record.revokedAt?.getTime() ?? 0);
     if (sinceRevoked <= REFRESH_REUSE_GRACE_MS) return;
-    void this.revokeAllRefreshTokens(record.userId);
+    // 会话已整体结束（登出 / 改密 / 已被吊销）时，旧 token 再出现只是残留（如旧标签页、旧设备），不算泄露：
+    // 只有会话里还有「轮换出来的有效 token」时，才说明可能有人拿着它在续期
+    const live = await this.prisma.refreshToken.count({
+      where: { sessionId: record.sessionId, revokedAt: null, expiresAt: { gt: new Date() } },
+    });
+    if (live === 0) return;
+    // 必须 await：Prisma 的查询是惰性的（PrismaPromise），不 await / then 就根本不会发 SQL。
+    // 吊销完成后才返回 401，攻击者手里刚轮换出的新 token 随即失效
+    await this.revokeAllRefreshTokens(record.userId);
+    await this.revocation.revokeUser(record.userId); // 攻击者手里尚未过期的 accessToken 也一并失效
     this.logger.audit(
       { event: 'token_replay', userId: record.userId, username: record.user.username, ip: req.ip, ua: this.ua(req) },
       `已作废的 refreshToken 被重复使用，疑似泄露，已吊销用户 ${record.user.username} 全部登录态`,
@@ -172,11 +183,24 @@ export class AuthService {
   }
 
   // ---------- 登出 ----------
+  /**
+   * 登出：吊销该 refreshToken 所属的整个登录会话
+   *   - 会话内全部 refreshToken 作废（含并发轮换出的）
+   *   - 该会话签发的 accessToken 立即失效（原来要等到自然过期，默认 2 小时内仍可调用接口）
+   *   - 同一用户在其他设备上的登录不受影响
+   */
   async logout(refreshToken: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: { tokenHash: sha256(refreshToken), revokedAt: null },
-      data: { revokedAt: new Date() },
+    const record = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: sha256(refreshToken) },
+      select: { sessionId: true },
     });
+    if (record) {
+      await this.prisma.refreshToken.updateMany({
+        where: { sessionId: record.sessionId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      await this.revocation.revokeSession(record.sessionId);
+    }
     return { success: true };
   }
 
@@ -236,11 +260,20 @@ export class AuthService {
   }
 
   // ---------- 修改自己的密码 ----------
-  async changePassword(user: AuthUser, oldPassword: string, newPassword: string) {
+  /**
+   * 修改自己的密码
+   *   原密码校验失败与登录失败共用计数与锁定（LoginGuardService）：拿到 accessToken 的人不能借这个接口
+   *   暴力猜原密码（猜中即可改密接管账号）；锁定后登录也会被锁，因为被猜的就是这个账号的密码
+   */
+  async changePassword(user: AuthUser, oldPassword: string, newPassword: string, ip?: string) {
     const detail = await this.prisma.user.findUnique({ where: { id: user.id } });
-    if (!detail || !(await bcrypt.compare(oldPassword, detail.password))) {
+    if (!detail) throw new BadRequestException('原密码不正确');
+    await this.guard.assertNotLocked(detail.username, ip); // 已锁定：429，业务码 42901
+    if (!(await bcrypt.compare(oldPassword, detail.password))) {
+      await this.guard.recordFailure(detail.username, ip);
       throw new BadRequestException('原密码不正确');
     }
+    await this.guard.clearFailures(detail.username, ip);
     await assertPasswordUsable(newPassword, detail.username, detail.password);
     const hash = await bcrypt.hash(newPassword, 10);
     await this.prisma.$transaction([
@@ -266,15 +299,25 @@ export class AuthService {
     name: string,
     req: Request,
     db: Pick<PrismaService, 'refreshToken'> = this.prisma,
+    /** 轮换时传入原会话；登录时不传，开启新会话 */
+    session?: { id: string; startedAt: Date },
   ): Promise<TokenPair> {
-    const accessToken = await this.jwt.signAsync({ sub: userId, username, name });
+    const sessionId = session?.id ?? randomBytes(16).toString('hex');
+    const startedAt = session?.startedAt ?? new Date();
+    const accessToken = await this.jwt.signAsync({ sub: userId, username, name, sid: sessionId });
     const refreshToken = randomBytes(48).toString('hex');
+    // 有效期 = min(本次起 JWT_REFRESH_EXPIRES_IN, 登录时起 JWT_REFRESH_ABSOLUTE_MAX)：
+    // 持续使用可以免登录，但最长不超过绝对上限，到期必须重新输入密码
     const ttl = parseDuration(this.config.get<string>('JWT_REFRESH_EXPIRES_IN') || '7d');
+    const absMax = parseDurationMs(this.config.get<string>('JWT_REFRESH_ABSOLUTE_MAX'), 30 * 86_400_000);
+    const expiresAt = new Date(Math.min(Date.now() + ttl, startedAt.getTime() + absMax));
     await db.refreshToken.create({
       data: {
         userId,
         tokenHash: sha256(refreshToken),
-        expiresAt: new Date(Date.now() + ttl),
+        sessionId,
+        sessionStartedAt: startedAt,
+        expiresAt,
         ip: req.ip,
         ua: this.ua(req),
       },

@@ -406,7 +406,7 @@ const vuePage = `<template>
         <template #empty>暂无数据</template>
       </el-table>
 
-      <TablePager :query="query" :total="total" :load="load" />
+      <TablePager :query="query" :total="total" :load="load" :error="error" />
     </el-card>
 
     <el-drawer v-model="visible" :title="isEdit ? '编辑' : '新增'" size="480px">
@@ -438,7 +438,7 @@ import { useCrudForm } from '@/composables/useCrudForm';
 import { formatTime } from '@/utils/datetime';
 
 // ---------- 列表：分页/查询/加载统一走 usePagedList（查询自动回到第 1 页；空查询条件由请求层自动去掉） ----------
-const { query, rows, total, loading, load, search, reset } = usePagedList<${Pascal}Query, ${Pascal}Item>(
+const { query, rows, total, loading, error, load, search, reset } = usePagedList<${Pascal}Query, ${Pascal}Item>(
   { page: 1, pageSize: 10, keyword: '', status: '' },
   (q, { signal }) => ${camel}Api.list(q, signal),
 );

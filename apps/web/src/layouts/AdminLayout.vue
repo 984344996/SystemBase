@@ -6,6 +6,7 @@
         <span class="brand-dot" />
         <span v-show="!collapsed">SystemBase</span>
       </div>
+      <!-- el-menu 的颜色属性必须是真实色值（不能传 var()）：与 styles/index.css 的 --sb-aside-bg 保持一致 -->
       <el-menu
         :default-active="activeMenu"
         :collapse="collapsed"
@@ -82,7 +83,7 @@
         <el-dropdown @command="onCommand">
           <span class="user-chip">
             <el-avatar :size="26" class="avatar">{{ auth.user?.name?.charAt(0) }}</el-avatar>
-            {{ auth.user?.name }}
+            <span class="user-name">{{ auth.user?.name }}</span>
             <MenuIcon name="ArrowDown" />
           </span>
           <template #dropdown>
@@ -175,6 +176,18 @@ const collapsed = ref(saved === null ? window.innerWidth < 992 : saved === "1");
 function toggleCollapse() {
   collapsed.value = !collapsed.value;
   localStorage.setItem(COLLAPSE_KEY, collapsed.value ? "1" : "0");
+}
+/**
+ * 窗口变窄（< 768px，手机 / 分屏）时自动收起侧栏，不改写用户保存的偏好；
+ * 变回宽屏时恢复用户的选择
+ */
+const NARROW_PX = 768;
+let wasNarrow = window.innerWidth < NARROW_PX;
+function onResize() {
+  const narrow = window.innerWidth < NARROW_PX;
+  if (narrow === wasNarrow) return;
+  wasNarrow = narrow;
+  collapsed.value = narrow ? true : localStorage.getItem(COLLAPSE_KEY) === "1";
 }
 
 // ---------- 面包屑与菜单高亮 ----------
@@ -293,11 +306,13 @@ async function submitPassword() {
 }
 
 onMounted(() => {
+  window.addEventListener("resize", onResize);
   refreshUnread();
   startPolling();
   document.addEventListener("visibilitychange", onVisibilityChange);
 });
 onBeforeUnmount(() => {
+  window.removeEventListener("resize", onResize);
   stopPolling();
   document.removeEventListener("visibilitychange", onVisibilityChange);
 });
@@ -418,5 +433,19 @@ onBeforeUnmount(() => {
 }
 .main {
   padding: 16px;
+}
+/* 窄屏：隐藏面包屑与用户名，只留图标，顶栏不换行 */
+@media (max-width: 768px) {
+  .header {
+    gap: 10px;
+    padding: 0 12px;
+  }
+  .header-left :deep(.el-breadcrumb),
+  .user-name {
+    display: none;
+  }
+  .main {
+    padding: 10px;
+  }
 }
 </style>

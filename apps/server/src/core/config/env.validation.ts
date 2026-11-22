@@ -7,12 +7,19 @@ export enum NodeEnv {
   Test = 'test',
 }
 
+/** 时长格式：数字 + 单位 s/m/h/d（与 parseDuration 一致；写成 1w、7 days 会被静默当成默认值，所以启动时就拒绝） */
+const DURATION = /^\d+[smhd]$/;
+/** 正整数（0 会让限流把所有请求拒掉、日志当天就被清掉） */
+const POSITIVE_INT = /^[1-9]\d*$/;
+
 class EnvVariables {
   @IsEnum(NodeEnv) @IsOptional() NODE_ENV?: NodeEnv;
   @IsString() DATABASE_URL!: string;
   @IsString() @IsOptional() JWT_SECRET?: string;
-  @IsString() @IsOptional() JWT_EXPIRES_IN?: string;
-  @IsString() @IsOptional() JWT_REFRESH_EXPIRES_IN?: string;
+  @Matches(DURATION, { message: 'JWT_EXPIRES_IN 格式如 2h / 30m（数字 + s/m/h/d）' }) @IsOptional() JWT_EXPIRES_IN?: string;
+  @Matches(DURATION, { message: 'JWT_REFRESH_EXPIRES_IN 格式如 7d（数字 + s/m/h/d）' }) @IsOptional() JWT_REFRESH_EXPIRES_IN?: string;
+  /** refreshToken 绝对过期上限（从登录时起算，轮换不重置），如 30d */
+  @Matches(DURATION, { message: 'JWT_REFRESH_ABSOLUTE_MAX 格式如 30d（数字 + s/m/h/d）' }) @IsOptional() JWT_REFRESH_ABSOLUTE_MAX?: string;
   @Matches(/^\d+$/, { message: 'PORT 需为端口号' }) @IsOptional() PORT?: string;
   // 信任的反向代理跳数（经 Nginx 单层反代填 1）/ true / false；默认 false（不信任 X-Forwarded-For）
   @Matches(/^(\d+|true|false)$/, { message: 'TRUST_PROXY 为代理跳数（如 1）或 true / false' }) @IsOptional() TRUST_PROXY?: string;
@@ -22,11 +29,11 @@ class EnvVariables {
   // Redis 键名前缀（默认 sb:）：多个环境/项目共用一个 Redis 时用来隔离
   @Matches(/^[\w:.-]{1,32}$/, { message: 'REDIS_KEY_PREFIX 只能包含字母数字 _ : . -，最长 32 位' }) @IsOptional() REDIS_KEY_PREFIX?: string;
   @IsString() @IsOptional() LOG_DIR?: string;
-  @IsString() @IsOptional() LOG_KEEP_DAYS?: string;
+  @Matches(POSITIVE_INT, { message: 'LOG_KEEP_DAYS 为正整数天（默认 30）' }) @IsOptional() LOG_KEEP_DAYS?: string;
   @IsIn(['debug', 'info', 'warn', 'error']) @IsOptional() LOG_LEVEL?: string;
-  @IsString() @IsOptional() THROTTLE_TTL?: string;
-  @IsString() @IsOptional() THROTTLE_LIMIT?: string;
-  @IsString() @IsOptional() THROTTLE_LOGIN_LIMIT?: string;
+  @Matches(POSITIVE_INT, { message: 'THROTTLE_TTL 为正整数秒（默认 60）' }) @IsOptional() THROTTLE_TTL?: string;
+  @Matches(POSITIVE_INT, { message: 'THROTTLE_LIMIT 为正整数次（默认 100）' }) @IsOptional() THROTTLE_LIMIT?: string;
+  @Matches(POSITIVE_INT, { message: 'THROTTLE_LOGIN_LIMIT 为正整数次（默认 5）' }) @IsOptional() THROTTLE_LOGIN_LIMIT?: string;
   @Matches(/^\d+(b|kb|mb)$/i, { message: 'BODY_LIMIT 格式如 1mb / 512kb' }) @IsOptional() BODY_LIMIT?: string;
   @Matches(/^\d+$/, { message: 'PERMISSION_CACHE_TTL 为秒数，0 表示关闭缓存' }) @IsOptional() PERMISSION_CACHE_TTL?: string;
   // API 文档开关：on / off（未配置时生产默认 off、其他环境 on）
@@ -50,6 +57,7 @@ class EnvVariables {
   @IsString() @IsOptional() UPLOAD_ALLOWED_MIME?: string; // 逗号分隔的 MIME 白名单，* 表示不限（高危扩展名仍拒绝）
   // ---- 定时任务 ----
   @Matches(/^\d+$/, { message: 'JOB_RECONCILE_SECONDS 为秒数（默认 60，0 表示关闭多实例任务对账）' }) @IsOptional() JOB_RECONCILE_SECONDS?: string;
+  @Matches(/^\d+$/, { message: 'JOB_SHUTDOWN_WAIT_SECONDS 为秒数（默认 8，需小于 PM2 kill_timeout 10 秒）' }) @IsOptional() JOB_SHUTDOWN_WAIT_SECONDS?: string;
   // ---- 前端日志上报 ----
   @IsIn(['on', 'off']) @IsOptional() CLIENT_LOG_ENABLED?: string;
   @Matches(/^\d+$/, { message: 'CLIENT_LOG_DAILY_MAX_BYTES 为字节数（默认 50MB）' }) @IsOptional() CLIENT_LOG_DAILY_MAX_BYTES?: string;
@@ -96,11 +104,15 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
   }
 
   // 填充默认值
+  // NODE_ENV 未设置按 production 处理（与上面 JWT_SECRET 的判定一致）：原来补成 development，
+  // 漏配时会以开发模式运行——500 返回内部错误信息、Swagger 默认开启、HSTS 关闭、CORS 放行 localhost
+  const nodeEnv = env.NODE_ENV || NodeEnv.Production;
   const merged: Record<string, unknown> = {
     ...config,
-    NODE_ENV: env.NODE_ENV || NodeEnv.Development,
+    NODE_ENV: nodeEnv,
     JWT_EXPIRES_IN: env.JWT_EXPIRES_IN || '2h',
     JWT_REFRESH_EXPIRES_IN: env.JWT_REFRESH_EXPIRES_IN || '7d',
+    JWT_REFRESH_ABSOLUTE_MAX: env.JWT_REFRESH_ABSOLUTE_MAX || '30d',
     PORT: env.PORT || '3000',
     // 默认不信任代理头：服务直接对外时 X-Forwarded-For 可被伪造（绕过 IP 白名单/限流/登录锁定）。
     // 经 Nginx 反代部署时在 env 显式配置 TRUST_PROXY=1（remote.env.example 已默认写好）
@@ -110,7 +122,7 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     REDIS_URL: env.REDIS_URL || 'redis://localhost:6379',
     LOG_DIR: env.LOG_DIR || 'logs',
     LOG_KEEP_DAYS: env.LOG_KEEP_DAYS || '30',
-    LOG_LEVEL: env.LOG_LEVEL || ((env.NODE_ENV || NodeEnv.Development) === NodeEnv.Production ? 'info' : 'debug'),
+    LOG_LEVEL: env.LOG_LEVEL || (nodeEnv === NodeEnv.Production ? 'info' : 'debug'),
     THROTTLE_TTL: env.THROTTLE_TTL || '60',
     THROTTLE_LIMIT: env.THROTTLE_LIMIT || '100',
     THROTTLE_LOGIN_LIMIT: env.THROTTLE_LOGIN_LIMIT || '5',

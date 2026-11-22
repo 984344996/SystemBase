@@ -46,6 +46,16 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...base, NODE_ENV: 'production' })).toThrow(/JWT_SECRET[\s\S]*CORS_ORIGINS/);
   });
 
+  it('NODE_ENV 未设置时按 production 处理（不会以开发模式运行）', () => {
+    const out = validateEnv({
+      DATABASE_URL: base.DATABASE_URL,
+      JWT_SECRET: 'x'.repeat(32),
+      CORS_ORIGINS: 'https://a.example.com',
+    });
+    expect(out.NODE_ENV).toBe('production');
+    expect(out.LOG_LEVEL).toBe('info');
+  });
+
   // 仓库里的 env 模板（以及本机存在的真实 env 文件）必须能通过校验：防止新增校验规则后已有环境启动失败
   const envDir = join(__dirname, '../../../../../deploy/envs');
   const files = ['local.env.example', 'remote.env.example', 'local.env', 'remote-pre.env', 'remote-release.env']
@@ -57,5 +67,15 @@ describe('validateEnv', () => {
     if (!env.JWT_SECRET || /请替换|YOUR_|CHANGE_ME/i.test(env.JWT_SECRET)) env.JWT_SECRET = 'x'.repeat(32);
     if (!env.CORS_ORIGINS) env.CORS_ORIGINS = 'http://localhost';
     expect(() => validateEnv(env)).not.toThrow();
+  });
+
+  it.each([
+    ['JWT_EXPIRES_IN', '1w'],
+    ['JWT_REFRESH_EXPIRES_IN', '7 days'],
+    ['THROTTLE_LIMIT', 'abc'],
+    ['THROTTLE_TTL', '0'],
+    ['LOG_KEEP_DAYS', '-1'],
+  ])('%s=%s 格式不对 → 启动时报错（原来会静默变成 NaN 或默认值）', (key, value) => {
+    expect(() => validateEnv({ ...base, [key]: value })).toThrow(key);
   });
 });

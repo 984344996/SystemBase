@@ -21,6 +21,7 @@ concurrency:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20   # 卡住时尽快失败（默认上限 6 小时）
     steps:
       - uses: actions/checkout@v4
       # pnpm 版本取 package.json 的 packageManager；先装 pnpm，setup-node 才能缓存 pnpm store
@@ -53,14 +54,16 @@ jobs:
       - name: 文档漂移检测（generated 文档与源码是否一致）
         run: |
           pnpm docs:gen
-          if ! git diff --exit-code docs/generated; then
+          # git status 同时能发现「新生成但未提交」的文件（git diff 只比对已跟踪文件）
+          if [ -n "$(git status --porcelain docs/generated)" ]; then
             echo "::error::docs/generated 与源码不一致——请本地跑 pnpm docs:gen 并提交"
-            git diff --stat docs/generated
+            git status --short docs/generated
             exit 1
           fi
 
   gen-crud:
     runs-on: ubuntu-latest
+    timeout-minutes: 15   # 卡住时尽快失败（默认上限 6 小时）
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -107,6 +110,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10   # 卡住时尽快失败（默认上限 6 小时）
     steps:
       - uses: actions/checkout@v4
 
@@ -131,6 +135,7 @@ jobs:
 
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # 卡住时尽快失败（默认上限 6 小时）
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -142,6 +147,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 20   # 卡住时尽快失败（默认上限 6 小时）
     needs: lint-and-test
     services:
       mysql:
@@ -171,5 +177,16 @@ jobs:
         run: |
           pnpm --filter @sb/shared build
           pnpm --filter @sb/server prisma:generate
+      # 改了 schema.prisma 却忘了生成迁移（或手写迁移与 schema 不一致）时失败：
+      # 在影子库里从零重放全部迁移，再与 schema 比对；有差异 → 退出码 2，并打印需要补的 SQL
+      - name: schema 与迁移一致性检查（prisma migrate diff）
+        run: |
+          mysql -h 127.0.0.1 -uroot -proot -e "CREATE DATABASE IF NOT EXISTS sb_shadow"
+          cd apps/server
+          pnpm exec prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url mysql://root:root@127.0.0.1:3306/sb_shadow \
+            --exit-code
       - name: E2E 主链路冒烟（登录/权限/CRUD/错误码/隐藏菜单）
         run: pnpm --filter @sb/server test:e2e

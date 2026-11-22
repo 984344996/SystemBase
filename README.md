@@ -7,7 +7,7 @@
 ```
 systembase/
 ├── apps/
-│   ├── server/        # NestJS 后端(core 框架层 + modules 系统模块(auth/user/role/menu/job/monitor) + example 示例)
+│   ├── server/        # NestJS 后端(core 框架层 + modules 系统模块(auth/user/role/menu/job/monitor/config/dict/file/notice) + example 示例)
 │   └── web/           # Vue3 + TS 管理端(登录/布局/系统管理页面)
 ├── packages/
 │   └── shared/        # 前后端共享：业务错误码 BizCode、响应结构、分页类型、密码规则、建树工具
@@ -61,7 +61,7 @@ pnpm install && pnpm lint && pnpm test
 | 命令 | 内容 |
 |---|---|
 | `pnpm lint` | 全部包类型检查 + `prisma validate` + ESLint |
-| `pnpm test` | 后端单测（jest，覆盖率门 50%）+ 前端单测（vitest） |
+| `pnpm test` | 后端单测（jest，覆盖率门：语句 / 行 50%、分支 52%、函数 48%，见 `apps/server/package.json`）+ 前端单测（vitest） |
 | `pnpm --filter @sb/server test:e2e` | 主链路 E2E（独立库 `system_base_e2e`） |
 | `./sb.sh setup-hooks` | 启用 pre-commit：提交前自动跑 lint + test + 生成文档漂移检查 |
 

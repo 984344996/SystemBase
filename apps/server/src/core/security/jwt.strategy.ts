@@ -4,11 +4,14 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../prisma/prisma.service';
 import { PermissionCacheService } from './permission-cache.service';
+import { SessionRevocationService } from './session-revocation.service';
 
 export interface JwtPayload {
   sub: number;
   username: string;
   name: string;
+  /** 登录会话 ID（对应 RefreshToken.sessionId）：登出时据此吊销；旧版本签发的 token 没有 */
+  sid?: string;
   /** 签发时间（秒，jsonwebtoken 自动写入） */
   iat?: number;
 }
@@ -31,6 +34,7 @@ export interface AuthUser {
  *
  * 改密/重置密码后旧 accessToken 立即失效：比较 token 的 iat 与用户 pwdUpdatedAt，
  * 早于改密时间签发的 token 一律拒绝（无需维护 token 黑名单）。
+ * 登出 / 检测到 refreshToken 重放后同样立即失效：见 SessionRevocationService。
  */
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -38,6 +42,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly cache: PermissionCacheService,
+    private readonly revocation: SessionRevocationService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -57,6 +62,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (payload.iat !== undefined && payload.iat * 1000 < authUser.pwdUpdatedAt - 1000) {
       throw new UnauthorizedException('密码已修改，请重新登录');
     }
+    const revoked = await this.revocation.revokedReason(payload.sub, payload.sid, payload.iat);
+    if (revoked) throw new UnauthorizedException(revoked);
     return authUser;
   }
 

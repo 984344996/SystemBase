@@ -77,4 +77,11 @@ export default tseslint.config(
       "no-empty": ["error", { allowEmptyCatch: true }],
     },
   },
+
+  // ---------- 测试文件：测试替身（mock / stub）按需用 any，不计入警告 ----------
+  // 放在全局规则之后才能覆盖；剩余的 any 警告只指向业务 / 框架代码，便于逐步收敛
+  {
+    files: ["**/*.spec.ts", "apps/server/test/**/*.ts"],
+    rules: { "@typescript-eslint/no-explicit-any": "off" },
+  },
 );

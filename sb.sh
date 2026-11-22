@@ -68,7 +68,7 @@
 #   ssh          登录服务器（交互式）
 #   gen-crud     生成 CRUD 模块骨架（本机操作，不碰服务器）
 #   init-project 新项目初始化：替换项目名/包作用域/库名，可删除示例模块（先预览，加 --yes 执行）
-#   setup-hooks  启用 .githooks/pre-commit（提交前自动跑 pnpm lint && pnpm test）
+#   setup-hooks  启用 .githooks/pre-commit（提交前自动跑 pnpm lint、pnpm test 与生成文档漂移检查）
 #
 # 可选环境变量（远程命令）：SKIP_TESTS=1 / SKIP_DB_BACKUP=1 / FORCE_FRESH=1 / ALLOW_FRESH=1 /
 #   CONFIRM=<环境名> / FORCE=1 / DB_ROOT_PASS=xxx，含义见 deploy.sh 顶部注释
@@ -130,7 +130,7 @@ case "$ENV_NAME" in
     chmod +x .githooks/pre-commit
     git config core.hooksPath .githooks
     echo -e "${G}✓ 已启用 pre-commit 钩子（.githooks/pre-commit）${N}"
-    echo "  提交前将执行: pnpm lint && pnpm test；临时跳过: SKIP_HOOKS=1 git commit ..."
+    echo "  提交前将执行: pnpm lint、pnpm test、生成文档漂移检查（pnpm docs:gen）；临时跳过: SKIP_HOOKS=1 git commit ..."
     ;;
   init-project)
     # 非环境命令：新项目初始化（参数原样透传，见 scripts/init-project.mjs）

@@ -53,9 +53,9 @@
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button v-permission="'system:config:update'" link type="primary" @click="openEdit(row)">编辑</el-button>
-            <el-popconfirm title="确认删除该参数？" @confirm="onDelete(row)">
+            <el-popconfirm title="确认删除该参数？" @confirm="runDelete(row.id, () => onDelete(row))">
               <template #reference>
-                <el-button v-permission="'system:config:delete'" link type="danger" :disabled="row.builtin">删除</el-button>
+                <el-button v-permission="'system:config:delete'" link type="danger" :loading="deletingId === row.id" :disabled="row.builtin">删除</el-button>
               </template>
             </el-popconfirm>
           </template>
@@ -99,8 +99,12 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
-import { configApi, type ConfigRow } from "@/api/config";
+import { configApi, type ConfigRow, configValueProblem } from "@/api/config";
 import { useAuthStore } from "@/stores/auth";
+import { useRowBusy } from "@/composables/useRowBusy";
+
+/** 行内删除：按钮 loading + 防重复点击 */
+const { busyId: deletingId, run: runDelete } = useRowBusy();
 
 const auth = useAuthStore();
 const rows = ref<ConfigRow[]>([]);
@@ -143,6 +147,8 @@ function commitDraft(row: ConfigRow) {
 /** row.value 始终是「已保存」的值：成功后才更新，失败保持原值 */
 async function saveInline(row: ConfigRow, value: string) {
   if (row.value === value || savingKeys.has(row.key)) return;
+  const problem = configValueProblem(value, row.type);
+  if (problem) return ElMessage.warning(problem);
   savingKeys.add(row.key);
   try {
     await configApi.update(row.key, { value });
@@ -172,6 +178,10 @@ function replaceForm(next: Partial<ConfigRow>) {
 }
 
 async function submit() {
+  if (saving.value) return;
+  if (!form.key?.trim() || !form.label?.trim()) return ElMessage.warning("请填写参数键与名称");
+  const problem = configValueProblem(form.value ?? "", form.type);
+  if (problem) return ElMessage.warning(problem);
   saving.value = true;
   try {
     const { key, value, type, group: g, label, remark } = form;

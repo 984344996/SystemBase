@@ -77,3 +77,27 @@ body,
   font-size: 12px;
   line-height: 1.4;
 }
+
+/*
+ * 窄屏（手机 / 小窗口）适配：
+ *   - 弹窗 / 抽屉在各页面写的固定宽度（如 width="520px"）不超出屏幕
+ *   - 窄屏下表单标签与提示文字收紧，避免挤压输入框
+ */
+.el-dialog {
+  max-width: calc(100vw - 24px);
+}
+.el-drawer {
+  max-width: 100vw;
+}
+@media (max-width: 768px) {
+  .el-dialog {
+    margin-top: 6vh !important;
+  }
+  .page-card {
+    padding: 12px;
+  }
+  .form-tip {
+    display: block;
+    margin-left: 0;
+  }
+}

@@ -62,8 +62,13 @@ export class OperateLogInterceptor implements NestInterceptor {
         module: options.module,
         action: options.action,
         method: req.method,
-        path: req.originalUrl.slice(0, 250),
-        params: redact({ ...(Object.keys(req.params || {}).length ? { _path: req.params } : {}), ...body }),
+        // 只记路径；查询参数单独脱敏记录（查询串里可能带 token 等，与访问日志「只记 path」一致）
+        path: req.originalUrl.split('?')[0].slice(0, 250),
+        params: redact({
+          ...(Object.keys(req.params || {}).length ? { _path: req.params } : {}),
+          ...(Object.keys(req.query || {}).length ? { _query: req.query } : {}),
+          ...body,
+        }),
         ip: req.ip,
         costMs: Date.now() - startAt,
         ...(error ? { error: error instanceof Error ? error.message : String(error) } : {}),

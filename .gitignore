@@ -4,6 +4,9 @@ coverage/
 logs/
 *.log
 .DS_Store
+# 编辑器 / TypeScript 增量编译缓存
+.idea/
+*.tsbuildinfo
 apps/server/prisma/*.db
 # 上传文件（运行时数据，服务器上在 shared/uploads）
 apps/server/uploads/

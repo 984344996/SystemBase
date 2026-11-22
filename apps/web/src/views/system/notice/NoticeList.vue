@@ -48,6 +48,7 @@
               v-permission="'system:notice:publish'"
               link
               type="success"
+              :loading="publishingId === row.id"
               @click="onPublish(row)"
             >
               发布
@@ -63,7 +64,7 @@
         <template #empty>暂无公告</template>
       </el-table>
 
-      <TablePager :query="query" :total="total" :load="load" />
+      <TablePager :query="query" :total="total" :load="load" :error="error" />
     </el-card>
 
     <el-drawer v-model="visible" :title="isEdit ? '编辑公告' : '新增公告'" size="560px">
@@ -83,7 +84,6 @@
             range-separator="~"
             start-placeholder="生效开始"
             end-placeholder="生效结束"
-            value-format="YYYY-MM-DDTHH:mm:ss"
             style="width: 100%"
           />
         </el-form-item>
@@ -111,9 +111,10 @@ import { noticeApi, type NoticeRow } from "@/api/notice";
 import { usePagedList } from "@/composables/usePagedList";
 import { useCrudForm } from "@/composables/useCrudForm";
 import { formatTime } from "@/utils/datetime";
+import { confirmAction } from "@/utils/confirm";
 
 // ---------- 列表 ----------
-const { query, rows, total, loading, load, search } = usePagedList(
+const { query, rows, total, loading, error, load, search } = usePagedList(
   { page: 1, pageSize: 10, keyword: "", type: "", status: "" },
   (q) => noticeApi.list(q),
 );
@@ -124,19 +125,21 @@ const rules: FormRules = {
   content: [{ required: true, message: "请输入内容", trigger: "blur" }],
 };
 const { visible, saving, isEdit, form, formRef, openCreate, openEdit, submit } = useCrudForm({
-  empty: () => ({ title: "", content: "", type: "NOTICE", top: false, range: null as [string, string] | null }),
+  // 有效期用 Date 对象：回填时把接口的 UTC ISO 串解析成本地时间，提交时转回带时区的 ISO 串。
+  // （原来用 value-format 字符串：回填 UTC 串会被当成本地时间，每编辑保存一次就偏 8 小时）
+  empty: () => ({ title: "", content: "", type: "NOTICE", top: false, range: null as [Date, Date] | null }),
   fromRow: (row: NoticeRow) => ({
     title: row.title,
     content: row.content,
     type: row.type,
     top: row.top,
-    range: row.startAt && row.endAt ? ([row.startAt, row.endAt] as [string, string]) : null,
+    range: row.startAt && row.endAt ? ([new Date(row.startAt), new Date(row.endAt)] as [Date, Date]) : null,
   }),
   // 有效期拆成 startAt/endAt；编辑时清空有效期要显式传 null（undefined 表示不修改，原有效期会保留）
   toPayload: ({ range, ...rest }, editing) => ({
     ...rest,
-    startAt: range?.[0] ?? (editing ? null : undefined),
-    endAt: range?.[1] ?? (editing ? null : undefined),
+    startAt: range ? range[0].toISOString() : editing ? null : undefined,
+    endAt: range ? range[1].toISOString() : editing ? null : undefined,
   }),
   create: noticeApi.create,
   update: noticeApi.update,
@@ -145,10 +148,19 @@ const { visible, saving, isEdit, form, formRef, openCreate, openEdit, submit } =
 });
 
 // ---------- 发布 / 删除 / 预览 ----------
+/** 发布：推送给全部用户，先确认；按钮显示 loading，防止重复点击 */
+const publishingId = ref<number>();
 async function onPublish(row: NoticeRow) {
-  await noticeApi.publish(row.id);
-  ElMessage.success("已发布");
-  load();
+  if (publishingId.value) return;
+  if (!(await confirmAction(`发布公告「${row.title}」？发布后所有用户的消息中心都会收到。`, { confirmText: "发布", type: "info" }))) return;
+  publishingId.value = row.id;
+  try {
+    await noticeApi.publish(row.id);
+    ElMessage.success("已发布");
+    load();
+  } finally {
+    publishingId.value = undefined;
+  }
 }
 
 /** 删除：按钮显示 loading，防止重复点击 */

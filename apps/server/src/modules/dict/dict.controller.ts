@@ -37,9 +37,9 @@ export class DictController {
   @Delete(':id')
   @RequirePermissions('system:dict:delete')
   @OperateLog({ module: '数据字典', action: '删除字典' })
-  @ApiOperation({ summary: '删除字典（字典项级联删除）' })
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.service.remove(id);
+  @ApiOperation({ summary: '删除字典（还有字典项时需传 force=true 确认一并删除）' })
+  remove(@Param('id', ParseIntPipe) id: number, @Query('force') force?: string) {
+    return this.service.remove(id, force === 'true' || force === '1');
   }
 
   // ---------- 字典项 ----------

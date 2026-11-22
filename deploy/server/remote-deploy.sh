@@ -228,7 +228,26 @@ install_backup_cron() {
     echo "$spec root bash $APP_DIR/current/deploy/server/db-backup.sh $APP_DIR $APP_NAME backup daily >> $SHARED/backup/cron.log 2>&1"
   } > "$f.tmp"
   chmod 644 "$f.tmp" && mv -f "$f.tmp" "$f"
-  echo "    每日备份: $spec（$f，备份保留 ${KEEP_BACKUP_DAYS:-7} 天；建议另行同步到对象存储/其他机器）"
+  echo "    每日备份: $spec（$f，备份保留 $(env_get "$SHARED/.env" KEEP_BACKUP_DAYS 7) 天；建议另行同步到对象存储/其他机器）"
+}
+# 日志轮转（/etc/logrotate.d/<APP_NAME>，每次发布刷新）：PM2 的 stdout/stderr 与定时备份日志原来只追加不清理，
+#   进程反复崩溃或长期运行会写满磁盘。应用业务日志（shared/logs）由应用自己按天切分并按 LOG_KEEP_DAYS 清理，不在此列
+#   copytruncate：PM2 一直持有文件句柄，原地截断而不是改名，无需重启进程
+install_logrotate() {
+  [ "$(id -u)" = "0" ] || return 0
+  if [ ! -d /etc/logrotate.d ] || ! command -v logrotate >/dev/null 2>&1; then
+    warn "服务器未安装 logrotate，PM2 日志不会自动轮转（建议安装：yum/apt install logrotate）"; return 0
+  fi
+  local f="/etc/logrotate.d/$APP_NAME" tmp
+  tmp="$(mktemp)"
+  {
+    echo "# 由 remote-deploy.sh 生成：$APP_NAME 的 PM2 输出与定时备份日志轮转（每次发布刷新，请勿手改）"
+    echo "$SHARED/pm2/*.log $SHARED/backup/cron.log {"
+    printf '    %s\n' daily 'maxsize 50M' 'rotate 14' missingok notifempty compress delaycompress copytruncate 'su root root'
+    echo "}"
+  } > "$tmp"
+  chmod 644 "$tmp" && mv -f "$tmp" "$f"
+  echo "    日志轮转: $f（PM2 输出 / 备份日志每天或超过 50M 轮转，保留 14 份）"
 }
 
 # 前端入口探测：经 Nginx 请求 SITE_PATH 首页，确认静态资源与路由可用（失败只警告）
@@ -308,13 +327,32 @@ fi
 # ============================================================
 # 四、解压发布包
 # ============================================================
+# 磁盘余量预检：每个版本都有一份完整 node_modules（数百 MB），空间不足时会在解压 / 装依赖 / 迁移前备份的
+#   中途失败。这里在动任何东西之前检查，不足直接中止（线上不变）。阈值 MIN_FREE_MB（shared/.env，默认 1024）
+check_disk() {
+  local need=1024 avail tool="$APP_DIR/current/deploy/server/env-tool.cjs"
+  # 此时新版本还没解压（env_get 用的是新版本里的解析器），用线上版本的；首次发布没有则取默认值
+  if [ -f "$tool" ]; then need="$(node "$tool" get "$SHARED/.env" MIN_FREE_MB 1024 2>/dev/null || echo 1024)"; fi
+  [[ "$need" =~ ^[0-9]+$ ]] || need=1024
+  avail="$(df -Pm "$APP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')"
+  [[ "$avail" =~ ^[0-9]+$ ]] || return 0   # 取不到（非常规文件系统）时跳过检查
+  if [ "$avail" -lt "$need" ]; then
+    echo "!! 磁盘剩余空间不足：$APP_DIR 所在分区只剩 ${avail}MB（要求至少 ${need}MB），已中止发布（线上未变）"
+    echo "   可清理：旧版本（调小 KEEP_RELEASES）、shared/backup 下的旧备份（调小 KEEP_BACKUP_DAYS）、shared/logs、PM2 日志"
+    exit 1
+  fi
+  echo "    磁盘剩余 ${avail}MB（要求 ≥ ${need}MB）"
+}
+
 step "解压发布包 → releases/$STAMP"
+check_disk
 rm -rf "$REL" && mkdir -p "$REL"
 REL_CREATED=1
 tar -xzf "$TAR" -C "$REL"
-# 发布包保留了开发机的属主（如 uid 501）和打包暂存目录的 700 权限：统一为 root 属主、
+# 发布包保留了开发机的属主（如 uid 501）和打包暂存目录的 700 权限：统一属主、
 # 目录可进入、文件可读，否则 nginx worker（非 root）读不到静态资源（Permission denied → 500）
-chown -R root:root "$REL"
+#   root 解压时 tar 默认保留原属主，需要改回 root；非 root 用户解压出来本来就属于自己（也无权 chown）
+if [ "$(id -u)" = "0" ]; then chown -R root:root "$REL"; fi
 chmod -R u+rwX,go+rX "$REL"
 # 去掉脚本里的 CRLF（Windows 打包时可能带入）
 find "$REL/deploy" -name "*.sh" -exec sh -c 'for f; do tr -d "\r" < "$f" > "$f.lf" && mv "$f.lf" "$f"; done' _ {} +
@@ -560,6 +598,7 @@ fi
 # ============================================================
 record OK
 install_backup_cron
+install_logrotate
 
 step "清理旧版本（保留最近 $KEEP 个）"
 CUR="$(basename "$(readlink -f "$APP_DIR/current")")"

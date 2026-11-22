@@ -4,7 +4,7 @@ import { JobService } from './job.service';
 
 const KEY = 'spec.job.service';
 
-function setup(opts: { handler: () => Promise<unknown>; lock?: boolean; timeoutSec?: number }) {
+function setup(opts: { handler: (ctx?: any) => Promise<unknown>; lock?: boolean; timeoutSec?: number }) {
   const job = {
     id: 1,
     name: '测试任务',
@@ -14,7 +14,7 @@ function setup(opts: { handler: () => Promise<unknown>; lock?: boolean; timeoutS
     status: 'ENABLED',
     timeoutSec: opts.timeoutSec ?? 5,
   };
-  const prisma: any = { job: { findUnique: jest.fn().mockResolvedValue(job), update: jest.fn(), findMany: jest.fn() } };
+  const prisma: any = { job: { findUnique: jest.fn().mockResolvedValue(job), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }), findMany: jest.fn() } };
   const logger = { job: jest.fn(), jobWarn: jest.fn(), jobError: jest.fn(), newTraceId: () => 'trace' };
   const release = jest.fn().mockResolvedValue(undefined);
   const lock = { acquire: jest.fn().mockResolvedValue(opts.lock === false ? null : release) };
@@ -49,10 +49,17 @@ describe('JobService.run（执行记录写日志文件）', () => {
       expect.any(String),
     );
     expect(release).toHaveBeenCalled();
-    expect(prisma.job.update).toHaveBeenCalledWith({
+    expect(prisma.job.updateMany).toHaveBeenCalledWith({
       where: { id: 1 },
       data: { prevRunAt: expect.any(Date), nextRunAt: expect.any(Date) },
     });
+  });
+
+  it('执行期间任务被删除：执行记录照常写出（不因更新时间失败而丢失）', async () => {
+    const { service, logger, prisma } = setup({ handler: async () => 'ok' });
+    prisma.job.updateMany.mockResolvedValue({ count: 0 });
+    await expect(service.run(1, 'manual')).resolves.toMatchObject({ status: 'SUCCESS' });
+    expect(logger.job).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCESS' }), expect.any(String));
   });
 
   it('失败：ERROR 记录错误堆栈，仍释放锁', async () => {
@@ -167,6 +174,15 @@ describe('JobService：每次触发只执行一次 / 手动执行不阻塞请求
     expect(logger.jobWarn).not.toHaveBeenCalled();
   });
 
+  it('RUN_ONCE 补跑：按错过的计划时间认领，多个实例同时重启只有一个执行', async () => {
+    const { service, lock } = setup({ handler: async () => 'x' });
+    const missed = new Date(Date.now() - 3_600_000);
+    const run = jest.spyOn(service, 'run');
+    await (service as any).handleMisfire({ id: 1, name: '测试任务', cronExpr: '0 * * * *', misfirePolicy: 'RUN_ONCE', nextRunAt: missed });
+    expect(run).toHaveBeenCalledWith(1, 'cron', missed);
+    expect(lock.acquire).toHaveBeenCalledWith(`job:fire:1:${missed.getTime()}`, expect.any(Number));
+  });
+
   it('定时触发：认领成功后再抢执行锁并执行；认领记录不释放（防止时钟稍慢的实例重复执行）', async () => {
     const claimRelease = jest.fn();
     const { service, lock, handler, release } = setup({ handler: async () => 'ok' });
@@ -197,5 +213,39 @@ describe('JobService：每次触发只执行一次 / 手动执行不阻塞请求
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('JobService 优雅关闭', () => {
+  beforeAll(() => JOB_HANDLERS.set(KEY, class {}));
+  afterAll(() => JOB_HANDLERS.delete(KEY));
+
+  it('关闭时等待执行中的任务结束：执行记录正常写出，任务能收到 abort 信号', async () => {
+    let signal: AbortSignal | undefined;
+    const { service, logger } = setup({
+      handler: async (ctx: any) => {
+        signal = ctx.signal;
+        await new Promise((r) => setTimeout(r, 30));
+        return 'done';
+      },
+    });
+    const running = service.run(1, 'manual');
+    await new Promise((r) => setTimeout(r, 5)); // 让任务进入执行
+    await service.onModuleDestroy();
+    await expect(running).resolves.toMatchObject({ status: 'SUCCESS' });
+    expect(signal?.aborted).toBe(true);
+    expect(logger.job).toHaveBeenCalledWith(expect.objectContaining({ status: 'SUCCESS' }), expect.any(String));
+    // 关闭后不再接受新的触发
+    await expect(service.run(1, 'cron', new Date())).resolves.toMatchObject({ skipped: true, status: 'SKIPPED_SHUTDOWN' });
+  });
+
+  it('等待超时仍未结束：补写 ABORTED 执行记录并释放执行锁', async () => {
+    const { service, logger, release } = setup({ handler: () => new Promise(() => undefined) });
+    (service as any).config = new ConfigService({ JOB_SHUTDOWN_WAIT_SECONDS: '0' });
+    void service.run(1, 'manual');
+    await new Promise((r) => setTimeout(r, 5));
+    await service.onModuleDestroy();
+    expect(logger.jobError).toHaveBeenCalledWith(expect.objectContaining({ status: 'ABORTED' }), expect.stringContaining('中断'));
+    expect(release).toHaveBeenCalled();
   });
 });

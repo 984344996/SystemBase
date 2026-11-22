@@ -48,11 +48,18 @@ async function ensureMenu(data: {
   icon?: string;
   sort: number;
 }) {
-  const existing = await prisma.menu.findFirst({
-    where: { parentId: data.parentId, name: data.name, type: data.type },
-  });
-  if (existing) return existing;
-  return prisma.menu.create({ data });
+  // 识别已有菜单：有权限码的按权限码（seed 里改了名称不会再新增一条重复菜单）；
+  // 没有权限码的（目录、仪表盘）按「父级 + 名称 + 类型」
+  const existing = data.permission
+    ? await prisma.menu.findFirst({ where: { permission: data.permission } })
+    : await prisma.menu.findFirst({ where: { parentId: data.parentId, name: data.name, type: data.type } });
+  if (!existing) return prisma.menu.create({ data });
+  // 与代码绑定的字段以 seed 为准：前端页面改了目录 / 路由，已上线的库要跟着改，否则页面打不开。
+  // 名称、图标、排序、可见、状态不覆盖（保留在「菜单管理」里做的调整）
+  const sync = { path: data.path ?? null, component: data.component ?? null };
+  if (existing.path === sync.path && existing.component === sync.component) return existing;
+  console.log(`  同步菜单「${existing.name}」的路由: ${existing.path ?? '-'} → ${sync.path ?? '-'}，组件: ${existing.component ?? '-'} → ${sync.component ?? '-'}`);
+  return prisma.menu.update({ where: { id: existing.id }, data: sync });
 }
 
 /** 幂等：字典类型存在则不改，只补齐缺失的字典项 */

@@ -13,8 +13,10 @@
  */
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { join, basename, extname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// fileURLToPath：URL.pathname 在中文 / 空格目录下是百分号编码，Windows 上还会多出前导斜杠（/C:/...）
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 mkdirSync(join(ROOT, 'docs/generated'), { recursive: true });
 
 /** 内容不变则不写（保持 git diff 稳定，CI 漂移检测依赖这一点；文档内不放生成时间戳同理） */
