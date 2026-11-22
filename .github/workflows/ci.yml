@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20   # 卡住时尽快失败（默认上限 6 小时）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # pnpm 版本取 package.json 的 packageManager；先装 pnpm，setup-node 才能缓存 pnpm store
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15   # 卡住时尽快失败（默认上限 6 小时）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -112,7 +112,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10   # 卡住时尽快失败（默认上限 6 小时）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: bash 语法 + shellcheck（只报 warning 及以上）
         if: runner.os == 'Linux'
@@ -137,7 +137,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10   # 卡住时尽快失败（默认上限 6 小时）
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -166,7 +166,7 @@ jobs:
       # E2E 用独立库，与本机开发数据无关；global-setup 会建库/迁移/种子
       E2E_DATABASE_URL: mysql://root:root@127.0.0.1:3306/system_base_e2e
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
